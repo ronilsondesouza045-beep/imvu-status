@@ -103,7 +103,27 @@ Como funciona no dia a dia:
 - **uma conta = um avatar para sempre** (e um avatar = uma conta; trocar de nick
   na conta não burla o vínculo);
 - os limites de aparelho, IP, idade de conta e teto diário continuam valendo;
-- para desligar a exigência de login (manutenção): `EXIGIR_LOGIN=0` no Render.
+   - para desligar a exigência de login (manutenção): `EXIGIR_LOGIN=0` no Render.
+
+### Login com Google (opcional)
+
+Além do email/senha, o app tem o botão **CONECTAR COM GOOGLE** na tela de login.
+
+As credenciais **nunca** vão para o repositório (o GitHub bloqueia segredos):
+
+- **No build (GitHub):** configure os secrets do repositório `GOOGLE_CLIENT_ID` e
+  `GOOGLE_CLIENT_SECRET` (Settings → Secrets and variables → Actions). O workflow cria
+  o `google_creds.py` sozinho antes de compilar.
+- **Localmente:** crie o arquivo `google_creds.py` (gitignored) na raiz com:
+  `GOOGLE_CLIENT_ID = "..."` e `GOOGLE_CLIENT_SECRET = "..."`.
+
+Como obter (uma vez só, grátis):
+
+1. [Google Auth Platform](https://console.cloud.google.com/auth/clients) (projeto do
+   Firebase) → **Clientes → Criar cliente** → tipo **Aplicativo para computador**.
+2. Copie o **ID do cliente** e a **Chave secreta** para os secrets/arquivo acima.
+3. Em **Público-alvo**, clique em **Publicar app** (sem isso só a sua conta entra).
+4. (O login por email/senha continua funcionando igual, sem mudar nada.)
 
 ### Avisos
 

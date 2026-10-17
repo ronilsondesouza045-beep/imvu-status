@@ -13,6 +13,18 @@ jobs:
       - name: Baixar codigo
         uses: actions/checkout@v4
 
+      - name: Preparar credenciais do Google
+        env:
+          G_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          G_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        run: |
+          if [ -n "$G_ID" ]; then
+            printf 'GOOGLE_CLIENT_ID = "%s"\nGOOGLE_CLIENT_SECRET = "%s"\n' "$G_ID" "$G_SECRET" > google_creds.py
+            echo "google_creds.py criado a partir dos secrets"
+          else
+            echo "sem secrets do Google; o login Google ficara desligado neste build"
+          fi
+
       - name: Compilar APK (Docker oficial do Kivy)
         run: |
           docker run --rm \

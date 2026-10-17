@@ -5,3 +5,4 @@ __pycache__/
 cookies.json
 .gradle/
 server/dados/
+google_creds.py

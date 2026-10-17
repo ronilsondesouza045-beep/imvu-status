@@ -71,9 +71,18 @@ FB_REFRESH = "https://securetoken.googleapis.com/v1/token?key="
 FB_IDP = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key="
 
 # Entrada com Google: crie um "ID do cliente OAuth" do tipo "Aplicativo para
-# computador" no Google Cloud Console do projeto e cole os dois valores aqui.
+# computador" no Google Cloud Console do projeto. As credenciais NUNCA vao no
+# repositorio (o GitHub bloqueia): crie um arquivo "google_creds.py" ao lado
+# deste com GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET (ou configure os Secrets
+# GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET no GitHub, que o build gera sozinho).
 GOOGLE_CLIENT_ID = ""
 GOOGLE_CLIENT_SECRET = ""
+try:
+    import google_creds
+    GOOGLE_CLIENT_ID = getattr(google_creds, "GOOGLE_CLIENT_ID", "") or GOOGLE_CLIENT_ID
+    GOOGLE_CLIENT_SECRET = getattr(google_creds, "GOOGLE_CLIENT_SECRET", "") or GOOGLE_CLIENT_SECRET
+except Exception:
+    pass
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 

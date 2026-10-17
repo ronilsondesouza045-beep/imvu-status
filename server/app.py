@@ -408,7 +408,7 @@ class SessaoIMVU:
             node = raiz.get(url) or {}
             d = node.get("data") or {}
             itens.append({
-                "nome": d.get("product_name") or "item",
+                "nome": d.get("name") or d.get("product_name") or "item",
                 "preco": d.get("price_credits") or d.get("credits"),
             })
         return {"total": int(data.get("total_count") or len(itens)), "itens": itens}

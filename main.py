@@ -50,7 +50,7 @@ RELEASES_API = f"https://api.github.com/repos/{REPO_GH}/releases/latest"
 # Troque pelo endereco que voce hospedar (ex: https://xxxx.onrender.com).
 # O app so conversa com esse servidor: sua conta e seus creditos NUNCA
 # ficam no APK nem aparecem na interface.
-PRESENTE_URL = "https://SEU-BACKEND-AQUI.onrender.com"
+PRESENTE_URL = "https://imvu-status-presente.onrender.com"
 
 try:
     import certifi

@@ -8,7 +8,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json
 source.exclude_dirs = .github, cli, .git, bin, .buildozer, __pycache__, assets/icon_src
 
-version = 1.2.0
+version = 1.3.0
 
 requirements = python3==3.11.5,hostpython3==3.11.5,kivy==2.3.0,kivymd==1.2.0,pillow,certifi
 

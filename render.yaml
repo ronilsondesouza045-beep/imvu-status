@@ -7,13 +7,15 @@ services:
     envVars:
       - key: IMVU_SESSAO
         sync: false
-      - key: GIFT_PRODUCT_ID
-        sync: false
       - key: ADMIN_TOKEN
         sync: false
-      - key: GIFT_CREDITOS
-        value: "500"
-      - key: GIFT_LIMITE_PESSOA
-        value: "1"
+      - key: PRESENTE_CREDITOS
+        value: "100"
+      - key: GIFT_JANELA_HORAS
+        value: "24"
+      - key: GIFT_IDADE_MINIMA_DIAS
+        value: "7"
+      - key: GIFT_LIMITE_IP_AVATARES
+        value: "3"
       - key: GIFT_LIMITE_DIARIO
         value: "10"

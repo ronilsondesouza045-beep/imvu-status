@@ -37,12 +37,13 @@ from kivymd.uix.button import MDRaisedButton, MDFlatButton  # noqa: F401
 from kivymd.uix.textfield import MDTextField  # noqa: F401
 from kivymd.uix.spinner import MDSpinner  # noqa: F401
 from kivymd.uix.boxlayout import MDBoxLayout  # noqa: F401
+from kivymd.uix.selectioncontrol import MDCheckbox  # noqa: F401
 
 API = "https://api.imvu.com"
 UA = ("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
 
-APP_VERSAO = "1.2.0"
+APP_VERSAO = "1.3.0"
 REPO_GH = "ronilsondesouza045-beep/imvu-status"
 RELEASES_API = f"https://api.github.com/repos/{REPO_GH}/releases/latest"
 
@@ -535,7 +536,7 @@ KV = """
                         spacing: dp(12)
                         MDLabel:
                             markup: True
-                            text: "Presente gratis: digite seu nick e resgate 1 item. Limite de 1 por avatar (pode acabar no dia). Toque em VER WISHLIST para ver a lista de desejos do nick."
+                            text: "Presente gratis: 100 CREDITOS a cada 24 horas para cada avatar! Digite seu nick, confirme que a conta e sua e resgate. Toque em VER WISHLIST para ver a lista de desejos do nick."
                             size_hint_y: None
                             height: self.texture_size[1]
                             text_size: self.width, None
@@ -551,10 +552,26 @@ KV = """
                         MDBoxLayout:
                             orientation: "horizontal"
                             size_hint_y: None
+                            height: dp(44)
+                            spacing: dp(0)
+                            MDCheckbox:
+                                id: presente_confirmo
+                                size_hint: None, None
+                                size: dp(44), dp(44)
+                                pos_hint: {"center_y": .5}
+                            MDLabel:
+                                markup: True
+                                text: "Confirmo que este nick e a [b]minha conta[/b] no IMVU."
+                                size_hint_y: None
+                                height: self.texture_size[1]
+                                text_size: self.width, None
+                        MDBoxLayout:
+                            orientation: "horizontal"
+                            size_hint_y: None
                             height: dp(48)
                             spacing: dp(8)
                             MDRaisedButton:
-                                text: "RESGATAR PRESENTE"
+                                text: "RESGATAR 100 CREDITOS"
                                 on_release: root.pegar_presente()
                             MDFlatButton:
                                 text: "VER WISHLIST"
@@ -575,7 +592,7 @@ KV = """
                             MDLabel:
                                 id: presente_result
                                 markup: True
-                                text: "Digite seu nick e toque em RESGATAR PRESENTE."
+                                text: "Digite seu nick, confirme que a conta e sua e toque em RESGATAR 100 CREDITOS."
                                 size_hint_y: None
                                 height: self.texture_size[1]
                                 text_size: self.width, None
@@ -816,7 +833,7 @@ class MainScreen(MDScreen):
         try:
             url = PRESENTE_URL.rstrip("/") + "/checar?" + urllib.parse.urlencode({"nick": nick})
             req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
                 js = json.loads(resp.read().decode("utf-8", errors="replace"))
             erro = None
         except urllib.error.HTTPError as e:
@@ -837,13 +854,18 @@ class MainScreen(MDScreen):
             return
         linhas = [f"[b]{_limpa(js.get('nick'))}[/b]  (user-{_limpa(js.get('cid'))})"]
         if js.get("ja_recebeu"):
-            quando = str(js.get("quando") or "")[:10]
+            quando = str(js.get("quando") or "")[:16].replace("T", " ")
+            volta = _limpa(js.get("volta_em") or "")
+            extra = f" Pode receber de novo {volta}." if volta else " Pode receber de novo depois de 24h."
             linhas.append(
-                f"[color={AMARELO}]Esse avatar ja recebeu o presente gratis"
-                + (f" ({quando})" if quando else "") + ".[/color]"
+                f"[color={AMARELO}]Esse avatar ja recebeu os 100 creditos"
+                + (f" ({quando})" if quando else "") + "." + extra + "[/color]"
             )
+        elif js.get("apto") is False:
+            motivo = _limpa(js.get("motivo") or "conta nao elegivel")
+            linhas.append(f"[color={VERMELHO}]Nao pode receber agora: {motivo}.[/color]")
         else:
-            linhas.append(f"[color={VERDE}]Ainda pode resgatar o presente gratis.[/color]")
+            linhas.append(f"[color={VERDE}]Pode resgatar 100 creditos agora![/color]")
         wishlist = js.get("wishlist") or {}
         if wishlist.get("disponivel"):
             itens = wishlist.get("itens") or []
@@ -859,7 +881,7 @@ class MainScreen(MDScreen):
         else:
             linhas.append("[i]Wishlist: indisponivel agora.[/i]")
         if js.get("restantes_hoje") is not None:
-            linhas.append(f"[i]Presentes restantes hoje: {js.get('restantes_hoje')}[/i]")
+            linhas.append(f"[i]Envios restantes hoje: {js.get('restantes_hoje')}[/i]")
         self.ids.presente_result.text = "\n".join(linhas)
 
     def pegar_presente(self):
@@ -873,11 +895,17 @@ class MainScreen(MDScreen):
         if not nick:
             self.ids.presente_result.text = f"[color={AMARELO}]Digite seu nick primeiro.[/color]"
             return
+        if not self.ids.presente_confirmo.active:
+            self.ids.presente_result.text = (
+                f"[color={AMARELO}]Marque a caixinha confirmando que o nick e a sua "
+                "conta no IMVU antes de resgatar.[/color]"
+            )
+            return
         if self._presente_ocupado:
             return
         self._presente_ocupado = True
         self.ids.presente_spinner.active = True
-        self.ids.presente_result.text = "Enviando presente..."
+        self.ids.presente_result.text = "Enviando 100 creditos..."
         mensagem = (self.ids.presente_msg.text or "").strip()
         threading.Thread(target=self._t_presente, args=(nick, mensagem), daemon=True).start()
 
@@ -890,7 +918,7 @@ class MainScreen(MDScreen):
                 headers={"User-Agent": UA, "Content-Type": "application/json; charset=utf-8"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=40) as resp:
+            with urllib.request.urlopen(req, timeout=40, context=_SSL_CTX) as resp:
                 js = json.loads(resp.read().decode("utf-8", errors="replace"))
             erro = None
         except urllib.error.HTTPError as e:
@@ -909,10 +937,9 @@ class MainScreen(MDScreen):
         if erro:
             self.ids.presente_result.text = f"[color={VERMELHO}]{_limpa(erro)}[/color]"
         elif js and js.get("ok"):
-            nome = _limpa(js.get("presente") or "item")
             self.ids.presente_result.text = (
-                f"[color={VERDE}][b]Presente enviado![/b][/color]\n"
-                f"Item: {nome}\nConfira seu inventario no IMVU."
+                f"[color={VERDE}][b]100 creditos enviados![/b][/color]\n"
+                "Confira sua carteira (Wallet) no IMVU. Aproveite!"
             )
         else:
             self.ids.presente_result.text = (
@@ -931,7 +958,7 @@ class MainScreen(MDScreen):
                 RELEASES_API,
                 headers={"User-Agent": UA, "Accept": "application/vnd.github+json"},
             )
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as resp:
                 js = json.loads(resp.read().decode("utf-8", errors="replace"))
             erro = None
         except Exception as e:
@@ -942,7 +969,8 @@ class MainScreen(MDScreen):
         if erro or not isinstance(js, dict):
             if self._manual_update:
                 self.ids.update_titulo.text = (
-                    f"[color={VERMELHO}]Nao foi possivel verificar agora: {_limpa(erro)}[/color]"
+                    f"[color={VERMELHO}]Nao foi possivel verificar agora: "
+                    f"{_limpa(str(erro))[:120]}[/color]"
                 )
             else:
                 self.ids.update_titulo.text = (

@@ -7,8 +7,10 @@ do servidor; nada disso vai para o app/APK) e envia presentes usando os
 mesmos endpoints que o site do IMVU usa (api.imvu.com).
 
 Controles:
-  - 1 presente por avatar (guardado por CID: trocar de nick nao burla)
-  - teto de presentes por dia (protege seus creditos de abuso)
+  - 100 creditos a cada 24 horas por avatar (guardado por CID: trocar de nick nao burla)
+  - contas muito novas (menos de GIFT_IDADE_MINIMA_DIAS) nao recebem
+  - limite de avatares diferentes por IP dentro da janela
+  - teto de envios por dia (protege seus creditos de abuso)
   - checa o saldo da conta antes de enviar
   - limitador simples por IP
 
@@ -18,10 +20,11 @@ Variaveis de ambiente:
   IMVU_SESSAO         (opcional) sessao pronta gerada por server/login_local.py:
                       cole aqui o texto e o servidor ja acorda logado,
                       sem precisar de senha nem 2FA no servidor
-  GIFT_PRODUCT_ID     ID numerico do item que sera presenteado
-  GIFT_CREDITOS       valor do presente em creditos (padrao 500)
-  GIFT_LIMITE_PESSOA  presentes por avatar (padrao 1)
-  GIFT_LIMITE_DIARIO  presentes por dia no total (padrao 10)
+  PRESENTE_CREDITOS       creditos por avatar em cada resgate (padrao 100)
+  GIFT_JANELA_HORAS       horas entre dois resgates do mesmo avatar (padrao 24)
+  GIFT_IDADE_MINIMA_DIAS  idade minima da conta que recebe, em dias (padrao 7)
+  GIFT_LIMITE_IP_AVATARES avatares diferentes por IP na janela (padrao 3)
+  GIFT_LIMITE_DIARIO      envios por dia no total (padrao 10)
   GIFT_MENSAGEM       mensagem padrao junto do presente (opcional)
   ADMIN_TOKEN         token para /admin/2fa e /admin/status
   DATA_DIR            pasta dos dados (padrao: server/dados)
@@ -56,10 +59,11 @@ DB_FILE = os.path.join(DATA_DIR, "gifts.db")
 
 IMVU_USER = (os.environ.get("IMVU_USER") or "").strip()
 IMVU_PASS = os.environ.get("IMVU_PASS") or ""
-GIFT_PRODUCT_ID = re.sub(r"\D", "", os.environ.get("GIFT_PRODUCT_ID") or "")
-GIFT_CREDITOS = int(os.environ.get("GIFT_CREDITOS") or 500)
-GIFT_LIMITE_PESSOA = int(os.environ.get("GIFT_LIMITE_PESSOA") or 1)
-GIFT_LIMITE_DIARIO = int(os.environ.get("GIFT_LIMITE_DIARIO") or 10)
+GIFT_CREDITOS = max(100, int(os.environ.get("PRESENTE_CREDITOS") or 100))
+GIFT_JANELA_HORAS = max(1, int(os.environ.get("GIFT_JANELA_HORAS") or 24))
+GIFT_IDADE_MINIMA_DIAS = max(0, int(os.environ.get("GIFT_IDADE_MINIMA_DIAS") or 7))
+GIFT_LIMITE_IP_AVATARES = max(1, int(os.environ.get("GIFT_LIMITE_IP_AVATARES") or 3))
+GIFT_LIMITE_DIARIO = max(1, int(os.environ.get("GIFT_LIMITE_DIARIO") or 10))
 GIFT_MENSAGEM = (os.environ.get("GIFT_MENSAGEM") or "").strip()
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN") or ""
 PORT = int(os.environ.get("PORT") or 8000)
@@ -97,28 +101,84 @@ def init_db():
                 " cid TEXT NOT NULL, nick TEXT, quando TEXT NOT NULL, txn TEXT NOT NULL,"
                 " PRIMARY KEY (cid, txn))"
             )
+            colunas = {l[1] for l in con.execute("PRAGMA table_info(presentes)").fetchall()}
+            if "ip" not in colunas:
+                con.execute("ALTER TABLE presentes ADD COLUMN ip TEXT")
             con.commit()
         finally:
             con.close()
 
 
-def presentes_do_cid(cid):
+def _agora_utc():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _limite_janela_str():
+    corte = _agora_utc() - datetime.timedelta(hours=GIFT_JANELA_HORAS)
+    return corte.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def ultimo_presente(cid):
     with _DB_LOCK:
         con = sqlite3.connect(DB_FILE)
         try:
-            cur = con.execute("SELECT COUNT(*) FROM presentes WHERE cid = ?", (cid,))
-            return int(cur.fetchone()[0] or 0)
+            cur = con.execute("SELECT MAX(quando) FROM presentes WHERE cid = ?", (cid,))
+            linha = cur.fetchone()
+            texto = linha[0] if linha and linha[0] else None
         finally:
             con.close()
+    if not texto:
+        return None
+    try:
+        return datetime.datetime.strptime(texto, "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=datetime.timezone.utc)
+    except Exception:
+        return None
 
 
-def quando_recebeu(cid):
+def ja_recebeu_janela(cid):
+    ultimo = ultimo_presente(cid)
+    if not ultimo:
+        return None
+    if _agora_utc() - ultimo < datetime.timedelta(hours=GIFT_JANELA_HORAS):
+        return ultimo
+    return None
+
+
+def texto_volta(ultimo):
+    falta = ultimo + datetime.timedelta(hours=GIFT_JANELA_HORAS) - _agora_utc()
+    seg = max(0, int(falta.total_seconds()))
+    horas, resto = divmod(seg, 3600)
+    minutos = resto // 60
+    if horas:
+        return f"em {horas}h{minutos:02d}"
+    return f"em {minutos} min"
+
+
+def idade_conta_dias(data):
+    try:
+        seg = int(data.get("registered"))
+    except Exception:
+        seg = None
+    if seg:
+        return int((time.time() - seg) / 86400)
+    criado = str(data.get("created") or "")
+    try:
+        dt = datetime.datetime.fromisoformat(criado.replace("Z", "+00:00"))
+        return (_agora_utc() - dt).days
+    except Exception:
+        return None
+
+
+def presentes_do_ip(ip):
     with _DB_LOCK:
         con = sqlite3.connect(DB_FILE)
         try:
-            cur = con.execute("SELECT MIN(quando) FROM presentes WHERE cid = ?", (cid,))
-            linha = cur.fetchone()
-            return linha[0] if linha and linha[0] else None
+            cur = con.execute(
+                "SELECT COUNT(DISTINCT cid) FROM presentes WHERE ip = ? AND quando >= ?",
+                (ip, _limite_janela_str()),
+            )
+            return int(cur.fetchone()[0] or 0)
         finally:
             con.close()
 
@@ -134,14 +194,15 @@ def presentes_hoje():
             con.close()
 
 
-def registrar_presente(cid, nick, txn):
+def registrar_presente(cid, nick, txn, ip=None):
     quando = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     with _DB_LOCK:
         con = sqlite3.connect(DB_FILE)
         try:
             con.execute(
-                "INSERT OR IGNORE INTO presentes (cid, nick, quando, txn) VALUES (?, ?, ?, ?)",
-                (cid, nick, quando, txn),
+                "INSERT OR IGNORE INTO presentes (cid, nick, quando, txn, ip)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (cid, nick, quando, txn, ip),
             )
             con.commit()
         finally:
@@ -393,10 +454,18 @@ class SessaoIMVU:
         data = node.get("data") or {}
         return int(data.get("credits") or 0)
 
-    def nome_produto(self):
-        js = self._req(f"{API}/product/product-{GIFT_PRODUCT_ID}")
-        node = (js.get("denormalized") or {}).get(js.get("id"), {})
-        return (node.get("data") or {}).get("product_name")
+    def enviar_creditos(self, cid_destino, mensagem):
+        txn = f"gift-{self.cid}-1-{int(time.time())}"
+        corpo = {
+            "message": (mensagem or GIFT_MENSAGEM or "")[:200],
+            "is_thank_you": False,
+            "txn_id": txn,
+            "type": 0,
+            "credit_amount": GIFT_CREDITOS,
+            "id": f"{API}/user/user-{cid_destino}",
+        }
+        self._req(f"{API}/user/user-{self.cid}/gifts", metodo="POST", corpo=corpo)
+        return txn
 
     def wishlist(self, cid, limite=5):
         js = self._req(f"{API}/user/user-{cid}/wishlist?limit={limite}", com_sauce=True)
@@ -413,22 +482,8 @@ class SessaoIMVU:
             })
         return {"total": int(data.get("total_count") or len(itens)), "itens": itens}
 
-    def enviar_presente(self, cid_destino, mensagem):
-        txn = f"gift-{self.cid}-{cid_destino}-{int(time.time())}"
-        corpo = {
-            "id": f"{API}/user/user-{cid_destino}",
-            "product_id": f"{API}/product/product-{GIFT_PRODUCT_ID}",
-            "is_thank_you": False,
-            "txn_id": txn,
-            "type": 1,
-            "message": (mensagem or GIFT_MENSAGEM or "")[:200],
-        }
-        self._req(f"{API}/user/user-{self.cid}/gifts", metodo="POST", corpo=corpo)
-        return txn
-
 
 SESSAO = SessaoIMVU()
-_PRODUTO_NOME = {"nome": None, "checado": 0.0}
 
 
 def status_publico():
@@ -438,7 +493,7 @@ def status_publico():
         "disponivel": SESSAO.estado == "logado" or bool(SESSAO.sauce),
         "presentes_hoje": hoje,
         "restantes_hoje": restantes,
-        "limite_por_avatar": GIFT_LIMITE_PESSOA,
+        "janela_horas": GIFT_JANELA_HORAS,
         "creditos_por_presente": GIFT_CREDITOS,
     }
 
@@ -450,8 +505,6 @@ def pedir_presente(body, ip):
         return 400, {"erro": "digite um nick valido"}
     if not rate_ok(ip):
         return 429, {"erro": "muitas tentativas; espere um pouco"}
-    if not GIFT_PRODUCT_ID:
-        return 503, {"erro": "presente indisponivel no momento"}
 
     if not SESSAO.garantir_login():
         if SESSAO.estado == "precisa_2fa":
@@ -470,13 +523,24 @@ def pedir_presente(body, ip):
     cid_destino = destino["cid"]
     nick_ok = destino["data"].get("username") or nick
     if str(cid_destino) == str(SESSAO.cid):
-        return 409, {"erro": "esse avatar nao pode receber o presente gratis"}
+        return 409, {"erro": "esse avatar nao pode receber os creditos gratis"}
 
-    if presentes_do_cid(cid_destino) >= GIFT_LIMITE_PESSOA:
-        return 409, {"erro": "esse avatar ja recebeu o presente gratis"}
+    dias = idade_conta_dias(destino["data"])
+    if dias is not None and dias < GIFT_IDADE_MINIMA_DIAS:
+        return 403, {"erro": f"essa conta e muito nova para receber "
+                              f"(minimo de {GIFT_IDADE_MINIMA_DIAS} dias de conta)"}
+
+    ultimo = ja_recebeu_janela(cid_destino)
+    if ultimo:
+        return 409, {"erro": "esse avatar ja recebeu os creditos; "
+                               f"pode receber de novo {texto_volta(ultimo)}"}
+
+    if presentes_do_ip(ip) >= GIFT_LIMITE_IP_AVATARES:
+        return 429, {"erro": "muitos avatares diferentes pedindo deste mesmo "
+                              "aparelho/rede; tente mais tarde"}
 
     if presentes_hoje() >= GIFT_LIMITE_DIARIO:
-        return 429, {"erro": "os presentes de hoje acabaram; tente amanha"}
+        return 429, {"erro": "os creditos de hoje acabaram; tente amanha"}
 
     try:
         saldo = SESSAO.saldo()
@@ -486,30 +550,29 @@ def pedir_presente(body, ip):
         return 503, {"erro": "presente indisponivel no momento (tente mais tarde)"}
 
     try:
-        txn = SESSAO.enviar_presente(cid_destino, mensagem)
+        txn = SESSAO.enviar_creditos(cid_destino, mensagem)
     except ErroAPI as e:
-        msg = str(e).lower()
-        if "too many requests" in msg:
+        erro = str(e)
+        baixo = erro.lower()
+        if "too many requests" in baixo:
             return 429, {"erro": "muitas requisicoes; tente de novo em alguns minutos"}
-        if "credit" in msg or "fund" in msg:
+        if "USER_GIFT-009" in erro:
+            return 403, {"erro": "essa conta nao pode receber presentes (conta teen)"}
+        if "USER_GIFT-206" in erro or "USER_GIFT-306" in erro:
+            return 403, {"erro": "essa conta precisa confirmar o email no IMVU antes de receber"}
+        if ("USER_GIFT-107" in erro or "USER_GIFT-212" in erro or "USER_GIFT-308" in erro
+                or "credit" in baixo or "fund" in baixo):
             return 503, {"erro": "presente indisponivel no momento (tente mais tarde)"}
-        _log(f"erro ao enviar presente: {e}")
-        return 502, {"erro": "nao consegui enviar o presente agora; tente de novo"}
+        _log(f"erro ao enviar creditos: {e}")
+        return 502, {"erro": "nao consegui enviar agora; tente de novo"}
 
-    registrar_presente(cid_destino, nick_ok, txn)
-    nome = _PRODUTO_NOME.get("nome")
-    if not nome and (time.time() - _PRODUTO_NOME["checado"] > 3600):
-        try:
-            nome = SESSAO.nome_produto()
-            _PRODUTO_NOME.update({"nome": nome, "checado": time.time()})
-        except ErroAPI:
-            _PRODUTO_NOME["checado"] = time.time()
-    _log(f"presente enviado para {nick_ok} (user-{cid_destino})")
+    registrar_presente(cid_destino, nick_ok, txn, ip)
+    _log(f"{GIFT_CREDITOS} creditos enviados para {nick_ok} (user-{cid_destino})")
     return 200, {
         "ok": True,
         "nick": nick_ok,
-        "presente": nome or "item",
-        "mensagem": "Presente enviado! Confira seu inventario no IMVU.",
+        "creditos": GIFT_CREDITOS,
+        "mensagem": f"{GIFT_CREDITOS} creditos enviados! Confira sua carteira no IMVU.",
     }
 
 
@@ -537,11 +600,25 @@ def checar_nick(nick, ip):
             wishlist = {"disponivel": False, "motivo": "o IMVU nao deixou ver a wishlist agora"}
     else:
         wishlist = {"disponivel": False, "motivo": "servidor ainda sem sessao logada"}
+    ultimo = ja_recebeu_janela(cid)
+    dias = idade_conta_dias(destino["data"])
+    apto = True
+    motivo = None
+    if ultimo:
+        apto = False
+        motivo = "ja recebeu nas ultimas %dh" % GIFT_JANELA_HORAS
+    elif dias is not None and dias < GIFT_IDADE_MINIMA_DIAS:
+        apto = False
+        motivo = f"conta com menos de {GIFT_IDADE_MINIMA_DIAS} dias"
     return 200, {
         "nick": nick_ok,
         "cid": cid,
-        "ja_recebeu": presentes_do_cid(cid) >= GIFT_LIMITE_PESSOA,
-        "quando": quando_recebeu(cid),
+        "ja_recebeu": bool(ultimo),
+        "quando": ultimo.strftime("%Y-%m-%d %H:%M") if ultimo else None,
+        "volta_em": texto_volta(ultimo) if ultimo else None,
+        "apto": apto,
+        "motivo": motivo,
+        "creditos": GIFT_CREDITOS,
         "wishlist": wishlist,
         "restantes_hoje": max(0, GIFT_LIMITE_DIARIO - presentes_hoje()),
     }
@@ -612,7 +689,9 @@ class Handler(BaseHTTPRequestHandler):
             info.update({
                 "estado_login": SESSAO.estado,
                 "ultimo_erro": SESSAO.ultimo_erro,
-                "produto_id": GIFT_PRODUCT_ID,
+                "creditos_por_envio": GIFT_CREDITOS,
+                "janela_horas": GIFT_JANELA_HORAS,
+                "idade_minima_dias": GIFT_IDADE_MINIMA_DIAS,
                 "limite_diario": GIFT_LIMITE_DIARIO,
                 "teto_diario_creditos": GIFT_LIMITE_DIARIO * GIFT_CREDITOS,
             })
@@ -656,8 +735,6 @@ def aquecer_login():
 def main():
     criar_pastas()
     init_db()
-    if not GIFT_PRODUCT_ID:
-        _log("AVISO: GIFT_PRODUCT_ID nao configurado; /gift vai responder 'indisponivel'")
     materializar_sessao_env()
     if SESSAO.carregar_sessao():
         _log("sessao salva encontrada; validando...")

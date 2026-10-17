@@ -14,7 +14,7 @@ Não faz varredura de pessoas nem fura localização desativada: mostra apenas o
 - **Card do avatar**: imagem do avatar (renderização oficial ou foto de perfil), seguidores e o look atual
 - Monitoramento a cada X segundos
 - Login opcional na sua conta (aumenta o que aparece)
-- **Aba PRESENTE**: presente grátis — a pessoa digita o nick, vê o status (já recebeu?) e a **wishlist** dela, e resgata 1 item (limite por avatar e teto diário, configurados no backend)
+- **Aba PRESENTE**: 100 créditos grátis por avatar a cada 24h — a pessoa digita o nick, confirma que a conta é dela, vê a **wishlist** e resgata (limites anti-abuso configurados no backend)
 - **Aba APP**: verifica se há versão nova, mostra o que mudou e botão para baixar o APK
 
 ## Estrutura
@@ -54,10 +54,9 @@ descompila e rouba a conta.
 2. **Suba o backend no Render** (grátis):
    - No [render.com](https://render.com), crie a conta → **New → Blueprint** → escolha este repositório
      (o arquivo `render.yaml` já configura tudo).
-   - Em **Environment**, preencha:
-     - `IMVU_SESSAO` → cole o texto do passo 1
-     - `GIFT_PRODUCT_ID` → ID do item que será presenteado (pegue na URL do item: `products_id=NNN`)
-     - `ADMIN_TOKEN` → invente um código secreto (ex: `meu-token-123`)
+    - Em **Environment**, preencha:
+      - `IMVU_SESSAO` → cole o texto do passo 1
+      - `ADMIN_TOKEN` → invente um código secreto (ex: `meu-token-123`)
    - Pronto: o servidor acorda já logado, sem senha e sem 2FA no servidor.
 3. **Ligue o app no backend**: no `main.py`, troque `PRESENTE_URL` pela URL do
    Render (ex: `https://imvu-status-presente.onrender.com`) e publique a versão nova.
@@ -74,15 +73,17 @@ IMVU pedir 2FA, envie o código uma vez:
 curl -X POST https://SEU-BACKEND.onrender.com/admin/2fa -H "X-Admin-Token: SEU_TOKEN" -H "Content-Type: application/json" -d "{\"codigo\": \"123456\"}"
 ```
 
-Outras variáveis (têm padrão): `GIFT_CREDITOS` (500), `GIFT_LIMITE_PESSOA` (1),
-`GIFT_LIMITE_DIARIO` (10), `GIFT_MENSAGEM`. Confira tudo em
-`GET /admin/status` (com o header `X-Admin-Token`).
+Outras variáveis (têm padrão): `PRESENTE_CREDITOS` (100), `GIFT_JANELA_HORAS` (24),
+`GIFT_IDADE_MINIMA_DIAS` (7), `GIFT_LIMITE_IP_AVATARES` (3), `GIFT_LIMITE_DIARIO` (10),
+`GIFT_MENSAGEM`. Confira tudo em `GET /admin/status` (com o header `X-Admin-Token`).
 
 ### Avisos
 
 - O plano grátis do Render "dorme" e o disco é apagado em atualizações do servidor
   (a lista de quem já recebeu pode zerar; use um **Disk** se quiser persistência).
-- Presente é **por item** (produto do catálogo de até `GIFT_CREDITOS`), não crédito puro.
+- Presente é **100 créditos** a cada 24h por avatar (confira `PRESENTE_CREDITOS` e
+  `GIFT_JANELA_HORAS`). Contas com menos de `GIFT_IDADE_MINIMA_DIAS` não recebem
+  (anti nick-fake) e há limite de avatares diferentes por IP.
 - Automatizar presente é ainda mais sensível que consulta: **pode dar ban na conta**.
   Use `GIFT_LIMITE_DIARIO` baixo e acompanhe o `/admin/status`.
 - Nunca suba a pasta `server/dados/` (já está no `.gitignore`): ela contém a sessão da sua conta.

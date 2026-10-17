@@ -43,7 +43,7 @@ API = "https://api.imvu.com"
 UA = ("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
 
-APP_VERSAO = "1.3.0"
+APP_VERSAO = "1.3.1"
 REPO_GH = "ronilsondesouza045-beep/imvu-status"
 RELEASES_API = f"https://api.github.com/repos/{REPO_GH}/releases/latest"
 
@@ -82,6 +82,41 @@ def _data_epoch(seg):
 def _versao_tupla(txt):
     partes = re.findall(r"\d+", str(txt or ""))
     return tuple(int(p) for p in partes[:4]) or (0,)
+
+
+_APARELHO_CACHE = {"id": None}
+
+
+def _id_aparelho():
+    if _APARELHO_CACHE["id"] is not None:
+        return _APARELHO_CACHE["id"]
+    vid = ""
+    try:
+        from jnius import autoclass
+        atividade = autoclass("org.kivy.android.PythonActivity").mActivity
+        secure = autoclass("android.provider.Settings$Secure")
+        aid = secure.getString(atividade.getContentResolver(), "android_id")
+        if aid:
+            vid = hashlib.sha256(("imvu-status:" + str(aid)).encode("utf-8")).hexdigest()[:32]
+    except Exception:
+        pass
+    if not vid:
+        try:
+            from kivy.app import App
+            pasta = App.get_running_app().user_data_dir
+            caminho = os.path.join(pasta, "aparelho.txt")
+            if os.path.exists(caminho):
+                with open(caminho, "r", encoding="utf-8") as f:
+                    vid = (f.read() or "").strip()
+            if not vid:
+                vid = hashlib.sha256(os.urandom(32)).hexdigest()[:32]
+                os.makedirs(pasta, exist_ok=True)
+                with open(caminho, "w", encoding="utf-8") as f:
+                    f.write(vid)
+        except Exception:
+            vid = ""
+    _APARELHO_CACHE["id"] = vid
+    return vid
 
 
 class ClienteIMVU:
@@ -911,7 +946,11 @@ class MainScreen(MDScreen):
 
     def _t_presente(self, nick, mensagem):
         try:
-            corpo = json.dumps({"nick": nick, "mensagem": mensagem}).encode("utf-8")
+            corpo = json.dumps({
+                "nick": nick,
+                "mensagem": mensagem,
+                "aparelho": _id_aparelho(),
+            }).encode("utf-8")
             req = urllib.request.Request(
                 PRESENTE_URL.rstrip("/") + "/gift",
                 data=corpo,

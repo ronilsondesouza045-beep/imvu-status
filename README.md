@@ -82,8 +82,13 @@ Outras variáveis (têm padrão): `PRESENTE_CREDITOS` (100), `GIFT_JANELA_HORAS`
 - O plano grátis do Render "dorme" e o disco é apagado em atualizações do servidor
   (a lista de quem já recebeu pode zerar; use um **Disk** se quiser persistência).
 - Presente é **100 créditos** a cada 24h por avatar (confira `PRESENTE_CREDITOS` e
-  `GIFT_JANELA_HORAS`). Contas com menos de `GIFT_IDADE_MINIMA_DIAS` não recebem
-  (anti nick-fake) e há limite de avatares diferentes por IP.
+  `GIFT_JANELA_HORAS`).
+- **1 aparelho = 1 avatar para sempre**: o app manda o ID do aparelho, então trocar
+  para VPN/4G ou reinstalar o app **não** libera outro nick. Contas com menos de
+  `GIFT_IDADE_MINIMA_DIAS` não recebem (anti nick-fake) e há limite de avatares
+  diferentes por IP.
+- A partir desta versão o APK é assinado sempre com a mesma chave (`ci/.android/debug.keystore`),
+  então as atualizações instalam por cima das anteriores (não precisa desinstalar).
 - Automatizar presente é ainda mais sensível que consulta: **pode dar ban na conta**.
   Use `GIFT_LIMITE_DIARIO` baixo e acompanhe o `/admin/status`.
 - Nunca suba a pasta `server/dados/` (já está no `.gitignore`): ela contém a sessão da sua conta.

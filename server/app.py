@@ -8,6 +8,8 @@ mesmos endpoints que o site do IMVU usa (api.imvu.com).
 
 Controles:
   - 100 creditos a cada 24 horas por avatar (guardado por CID: trocar de nick nao burla)
+  - 1 aparelho = 1 avatar para sempre (o app manda o ID do aparelho, que nao
+    muda com VPN, 4G ou reinstalacao do app)
   - contas muito novas (menos de GIFT_IDADE_MINIMA_DIAS) nao recebem
   - limite de avatares diferentes por IP dentro da janela
   - teto de envios por dia (protege seus creditos de abuso)
@@ -104,6 +106,10 @@ def init_db():
             colunas = {l[1] for l in con.execute("PRAGMA table_info(presentes)").fetchall()}
             if "ip" not in colunas:
                 con.execute("ALTER TABLE presentes ADD COLUMN ip TEXT")
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS aparelhos ("
+                " aparelho TEXT PRIMARY KEY, cid TEXT NOT NULL, nick TEXT, criado TEXT NOT NULL)"
+            )
             con.commit()
         finally:
             con.close()
@@ -205,6 +211,42 @@ def registrar_presente(cid, nick, txn, ip=None):
                 (cid, nick, quando, txn, ip),
             )
             con.commit()
+        finally:
+            con.close()
+
+
+def cid_do_aparelho(aparelho):
+    with _DB_LOCK:
+        con = sqlite3.connect(DB_FILE)
+        try:
+            cur = con.execute("SELECT cid FROM aparelhos WHERE aparelho = ?", (aparelho,))
+            linha = cur.fetchone()
+            return linha[0] if linha else None
+        finally:
+            con.close()
+
+
+def registrar_aparelho(aparelho, cid, nick):
+    quando = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    with _DB_LOCK:
+        con = sqlite3.connect(DB_FILE)
+        try:
+            con.execute(
+                "INSERT OR IGNORE INTO aparelhos (aparelho, cid, nick, criado)"
+                " VALUES (?, ?, ?, ?)",
+                (aparelho, str(cid), nick, quando),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
+def aparelhos_ligados():
+    with _DB_LOCK:
+        con = sqlite3.connect(DB_FILE)
+        try:
+            cur = con.execute("SELECT COUNT(*) FROM aparelhos")
+            return int(cur.fetchone()[0] or 0)
         finally:
             con.close()
 
@@ -501,6 +543,7 @@ def status_publico():
 def pedir_presente(body, ip):
     nick = str(body.get("nick") or "").strip()
     mensagem = str(body.get("mensagem") or "").strip()[:200]
+    aparelho = str(body.get("aparelho") or "").strip()[:64]
     if not nick or len(nick) > 40:
         return 400, {"erro": "digite um nick valido"}
     if not rate_ok(ip):
@@ -535,6 +578,12 @@ def pedir_presente(body, ip):
         return 409, {"erro": "esse avatar ja recebeu os creditos; "
                                f"pode receber de novo {texto_volta(ultimo)}"}
 
+    if aparelho:
+        ligado = cid_do_aparelho(aparelho)
+        if ligado and ligado != str(cid_destino):
+            return 409, {"erro": "esse aparelho ja esta ligado a outro avatar; "
+                                  "so da para resgatar sempre com o mesmo nick"}
+
     if presentes_do_ip(ip) >= GIFT_LIMITE_IP_AVATARES:
         return 429, {"erro": "muitos avatares diferentes pedindo deste mesmo "
                               "aparelho/rede; tente mais tarde"}
@@ -567,6 +616,8 @@ def pedir_presente(body, ip):
         return 502, {"erro": "nao consegui enviar agora; tente de novo"}
 
     registrar_presente(cid_destino, nick_ok, txn, ip)
+    if aparelho:
+        registrar_aparelho(aparelho, cid_destino, nick_ok)
     _log(f"{GIFT_CREDITOS} creditos enviados para {nick_ok} (user-{cid_destino})")
     return 200, {
         "ok": True,
@@ -693,6 +744,7 @@ class Handler(BaseHTTPRequestHandler):
                 "janela_horas": GIFT_JANELA_HORAS,
                 "idade_minima_dias": GIFT_IDADE_MINIMA_DIAS,
                 "limite_diario": GIFT_LIMITE_DIARIO,
+                "aparelhos_ligados": aparelhos_ligados(),
                 "teto_diario_creditos": GIFT_LIMITE_DIARIO * GIFT_CREDITOS,
             })
             self._responder(200, info)

@@ -19,6 +19,7 @@ jobs:
             -v "$PWD":/home/user/hostcwd \
             -v "$PWD/ci":/home/user/.config \
             -v "$PWD/ci/.android":/home/user/.android \
+            -v "$PWD/ci/.android":/root/.android \
             -e PIP_CONSTRAINT=/home/user/hostcwd/ci/pip-constraint.txt \
             kivy/buildozer:latest android debug
 

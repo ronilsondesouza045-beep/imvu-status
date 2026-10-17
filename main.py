@@ -43,7 +43,7 @@ API = "https://api.imvu.com"
 UA = ("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
 
-APP_VERSAO = "1.3.1"
+APP_VERSAO = "1.3.2"
 REPO_GH = "ronilsondesouza045-beep/imvu-status"
 RELEASES_API = f"https://api.github.com/repos/{REPO_GH}/releases/latest"
 

@@ -9,6 +9,10 @@ services:
         sync: false
       - key: ADMIN_TOKEN
         sync: false
+      - key: FIREBASE_KEY
+        sync: false
+      - key: EXIGIR_LOGIN
+        value: "1"
       - key: PRESENTE_CREDITOS
         value: "100"
       - key: GIFT_JANELA_HORAS

@@ -77,6 +77,34 @@ Outras variáveis (têm padrão): `PRESENTE_CREDITOS` (100), `GIFT_JANELA_HORAS`
 `GIFT_IDADE_MINIMA_DIAS` (7), `GIFT_LIMITE_IP_AVATARES` (3), `GIFT_LIMITE_DIARIO` (10),
 `GIFT_MENSAGEM`. Confira tudo em `GET /admin/status` (com o header `X-Admin-Token`).
 
+### Login do app (conta por email — Firebase)
+
+O app agora abre numa **tela de login bonita** (com o banner) e o resgate fica ligado
+à conta de email: trocar de celular, desinstalar o app ou usar VPN **não** libera outro
+nick — se entrar com a mesma conta, continua no mesmo avatar.
+
+Para ativar (uma vez só, grátis, ~5 min):
+
+1. Abra [console.firebase.google.com](https://console.firebase.google.com) com sua conta Google.
+2. **Criar projeto** → nome `imvu-status` → desmarque Analytics → Criar.
+3. Menu **Criação → Authentication → Começar** → aba **Método de login** →
+   ative **E-mail/senha** → Salvar.
+4. ⚙ **Configurações do projeto → Seus apps** → clique no ícone **`</>`** (Web) →
+   apelido `app` → Registrar.
+5. Copie a **Web API Key** (`AIzaSy...`) e cole em **dois lugares**:
+   - no `main.py`, constante `FIREBASE_KEY`;
+   - no Render, variável `FIREBASE_KEY` (o campo já existe no `render.yaml`).
+6. Publique a versão nova do app.
+
+Como funciona no dia a dia:
+
+- o app **lembra o login** (não precisa digitar sempre; só se sair da conta);
+- o e-mail precisa estar **confirmado** (o Firebase manda o link; confira o spam);
+- **uma conta = um avatar para sempre** (e um avatar = uma conta; trocar de nick
+  na conta não burla o vínculo);
+- os limites de aparelho, IP, idade de conta e teto diário continuam valendo;
+- para desligar a exigência de login (manutenção): `EXIGIR_LOGIN=0` no Render.
+
 ### Avisos
 
 - O plano grátis do Render "dorme" e o disco é apagado em atualizações do servidor
@@ -87,6 +115,10 @@ Outras variáveis (têm padrão): `PRESENTE_CREDITOS` (100), `GIFT_JANELA_HORAS`
   para VPN/4G ou reinstalar o app **não** libera outro nick. Contas com menos de
   `GIFT_IDADE_MINIMA_DIAS` não recebem (anti nick-fake) e há limite de avatares
   diferentes por IP.
+- **Conta do app (email)**: com o login ativado, o resgate exige conta com email
+  confirmado e fica ligado a ela para sempre — mesmo em outro celular, o vínculo
+  continua. Quem tenta outro nick na mesma conta ou outro nick no mesmo aparelho
+  é bloqueado.
 - A partir desta versão o APK é assinado sempre com a mesma chave (`ci/.android/debug.keystore`),
   então as atualizações instalam por cima das anteriores (não precisa desinstalar).
 - Automatizar presente é ainda mais sensível que consulta: **pode dar ban na conta**.

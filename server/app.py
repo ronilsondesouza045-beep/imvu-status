@@ -28,6 +28,10 @@ Variaveis de ambiente:
   GIFT_LIMITE_IP_AVATARES avatares diferentes por IP na janela (padrao 3)
   GIFT_LIMITE_DIARIO      envios por dia no total (padrao 10)
   GIFT_MENSAGEM       mensagem padrao junto do presente (opcional)
+  FIREBASE_KEY        Web API Key do projeto Firebase (login por email no app).
+                      Sem ela, o login nao e exigido (modo antigo).
+  EXIGIR_LOGIN        "1" (padrao) exige conta logada com email confirmado;
+                      "0" volta ao modo antigo (so aparelho)
   ADMIN_TOKEN         token para /admin/2fa e /admin/status
   DATA_DIR            pasta dos dados (padrao: server/dados)
   PORT                porta (padrao 8000)
@@ -68,6 +72,9 @@ GIFT_LIMITE_IP_AVATARES = max(1, int(os.environ.get("GIFT_LIMITE_IP_AVATARES") o
 GIFT_LIMITE_DIARIO = max(1, int(os.environ.get("GIFT_LIMITE_DIARIO") or 10))
 GIFT_MENSAGEM = (os.environ.get("GIFT_MENSAGEM") or "").strip()
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN") or ""
+FIREBASE_KEY = (os.environ.get("FIREBASE_KEY") or "").strip()
+EXIGIR_LOGIN = (os.environ.get("EXIGIR_LOGIN", "1") or "1").strip().lower() not in ("0", "false", "no")
+FB_LOOKUP_URL = "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key="
 PORT = int(os.environ.get("PORT") or 8000)
 
 try:
@@ -109,6 +116,10 @@ def init_db():
             con.execute(
                 "CREATE TABLE IF NOT EXISTS aparelhos ("
                 " aparelho TEXT PRIMARY KEY, cid TEXT NOT NULL, nick TEXT, criado TEXT NOT NULL)"
+            )
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS contas ("
+                " uid TEXT PRIMARY KEY, email TEXT, cid TEXT NOT NULL, nick TEXT, criado TEXT NOT NULL)"
             )
             con.commit()
         finally:
@@ -249,6 +260,96 @@ def aparelhos_ligados():
             return int(cur.fetchone()[0] or 0)
         finally:
             con.close()
+
+
+def conta_do_uid(uid):
+    with _DB_LOCK:
+        con = sqlite3.connect(DB_FILE)
+        con.row_factory = sqlite3.Row
+        try:
+            cur = con.execute("SELECT uid, email, cid, nick FROM contas WHERE uid = ?", (uid,))
+            linha = cur.fetchone()
+            return dict(linha) if linha else None
+        finally:
+            con.close()
+
+
+def conta_do_cid(cid):
+    with _DB_LOCK:
+        con = sqlite3.connect(DB_FILE)
+        con.row_factory = sqlite3.Row
+        try:
+            cur = con.execute("SELECT uid, email, cid, nick FROM contas WHERE cid = ?", (str(cid),))
+            linha = cur.fetchone()
+            return dict(linha) if linha else None
+        finally:
+            con.close()
+
+
+def registrar_conta(uid, email, cid, nick):
+    quando = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    with _DB_LOCK:
+        con = sqlite3.connect(DB_FILE)
+        try:
+            con.execute(
+                "INSERT OR IGNORE INTO contas (uid, email, cid, nick, criado)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (uid, email, str(cid), nick, quando),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
+def contas_ligadas():
+    with _DB_LOCK:
+        con = sqlite3.connect(DB_FILE)
+        try:
+            cur = con.execute("SELECT COUNT(*) FROM contas")
+            return int(cur.fetchone()[0] or 0)
+        finally:
+            con.close()
+
+
+_CACHE_TOKEN = {}
+
+
+def validar_conta(id_token):
+    """Confere o token do Firebase e devolve {uid, email, verificado} ou None."""
+    if not FIREBASE_KEY or not id_token:
+        return None
+    agora = time.time()
+    guardado = _CACHE_TOKEN.get(id_token)
+    if guardado and guardado[0] > agora:
+        return guardado[1]
+    try:
+        corpo = json.dumps({"idToken": id_token}).encode("utf-8")
+        req = urllib.request.Request(
+            FB_LOOKUP_URL + FIREBASE_KEY, data=corpo, method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as resp:
+            js = json.loads(resp.read().decode("utf-8", errors="replace"))
+        usuarios = js.get("users") or []
+        if not usuarios:
+            return None
+        u = usuarios[0]
+        info = {
+            "uid": u.get("localId") or "",
+            "email": u.get("email") or "",
+            "verificado": bool(u.get("emailVerified")),
+        }
+        if not info["uid"]:
+            return None
+        _CACHE_TOKEN[id_token] = (agora + 600, info)
+        if len(_CACHE_TOKEN) > 500:
+            corte = agora - 60
+            for t in list(_CACHE_TOKEN):
+                if _CACHE_TOKEN[t][0] < corte:
+                    del _CACHE_TOKEN[t]
+        return info
+    except Exception:
+        return None
 
 
 def materializar_sessao_env():
@@ -549,6 +650,19 @@ def pedir_presente(body, ip):
     if not rate_ok(ip):
         return 429, {"erro": "muitas tentativas; espere um pouco"}
 
+    token = str(body.get("token") or "").strip()[:4096]
+    conta = validar_conta(token) if token else None
+    if FIREBASE_KEY and EXIGIR_LOGIN:
+        if not conta:
+            if token:
+                return 401, {"erro": "sua sessao expirou ou o login nao confere; "
+                                      "entre de novo no app (aba CONTA)"}
+            return 401, {"erro": "entre na sua conta do app (aba CONTA) para "
+                                  "resgatar o presente"}
+        if not conta["verificado"]:
+            return 403, {"erro": "confirme seu email para liberar o resgate; "
+                                  "veja a caixa de entrada (e o spam) e tente de novo"}
+
     if not SESSAO.garantir_login():
         if SESSAO.estado == "precisa_2fa":
             _log("AVISO: login pendente de 2FA; use POST /admin/2fa com o codigo")
@@ -572,6 +686,17 @@ def pedir_presente(body, ip):
     if dias is not None and dias < GIFT_IDADE_MINIMA_DIAS:
         return 403, {"erro": f"essa conta e muito nova para receber "
                               f"(minimo de {GIFT_IDADE_MINIMA_DIAS} dias de conta)"}
+
+    if conta:
+        registro = conta_do_uid(conta["uid"])
+        if registro and str(registro.get("cid")) != str(cid_destino):
+            nome_ligado = registro.get("nick") or f"user-{registro.get('cid')}"
+            return 409, {"erro": f"sua conta esta ligada ao avatar {nome_ligado}; "
+                                  "por seguranca o resgate fica sempre nele"}
+        dono = conta_do_cid(cid_destino)
+        if dono and dono.get("uid") != conta["uid"]:
+            return 409, {"erro": "esse avatar ja esta ligado a outra conta; "
+                                  "por seguranca o resgate so continua nessa conta"}
 
     ultimo = ja_recebeu_janela(cid_destino)
     if ultimo:
@@ -618,7 +743,10 @@ def pedir_presente(body, ip):
     registrar_presente(cid_destino, nick_ok, txn, ip)
     if aparelho:
         registrar_aparelho(aparelho, cid_destino, nick_ok)
-    _log(f"{GIFT_CREDITOS} creditos enviados para {nick_ok} (user-{cid_destino})")
+    if conta:
+        registrar_conta(conta["uid"], conta["email"], cid_destino, nick_ok)
+    _log(f"{GIFT_CREDITOS} creditos enviados para {nick_ok} (user-{cid_destino})"
+         + (f" | conta {conta['email']}" if conta else ""))
     return 200, {
         "ok": True,
         "nick": nick_ok,
@@ -627,12 +755,13 @@ def pedir_presente(body, ip):
     }
 
 
-def checar_nick(nick, ip):
+def checar_nick(nick, ip, token=None):
     nick = (nick or "").strip()
     if not nick or len(nick) > 40:
         return 400, {"erro": "digite um nick valido"}
     if not rate_ok(ip):
         return 429, {"erro": "muitas tentativas; espere um pouco"}
+    conta = validar_conta(str(token or "").strip()) if token else None
     try:
         destino = SESSAO.resolver_nick(nick)
     except ErroAPI as e:
@@ -661,6 +790,23 @@ def checar_nick(nick, ip):
     elif dias is not None and dias < GIFT_IDADE_MINIMA_DIAS:
         apto = False
         motivo = f"conta com menos de {GIFT_IDADE_MINIMA_DIAS} dias"
+    elif FIREBASE_KEY and EXIGIR_LOGIN and not conta:
+        apto = False
+        motivo = "entre na sua conta no app (aba CONTA) para desbloquear o resgate"
+    elif conta and not conta["verificado"]:
+        apto = False
+        motivo = "confirme seu email para desbloquear o resgate"
+    elif conta:
+        registro = conta_do_uid(conta["uid"])
+        if registro and str(registro.get("cid")) != str(cid):
+            apto = False
+            motivo = ("sua conta esta ligada ao avatar "
+                      f"{registro.get('nick') or ('user-' + str(registro.get('cid')))}")
+        else:
+            dono = conta_do_cid(cid)
+            if dono and dono.get("uid") != conta["uid"]:
+                apto = False
+                motivo = "esse avatar ja esta ligado a outra conta"
     return 200, {
         "nick": nick_ok,
         "cid": cid,
@@ -669,6 +815,9 @@ def checar_nick(nick, ip):
         "volta_em": texto_volta(ultimo) if ultimo else None,
         "apto": apto,
         "motivo": motivo,
+        "login_exigido": bool(FIREBASE_KEY and EXIGIR_LOGIN),
+        "conta": ({"email": conta["email"], "verificado": bool(conta["verificado"])}
+                  if conta else None),
         "creditos": GIFT_CREDITOS,
         "wishlist": wishlist,
         "restantes_hoje": max(0, GIFT_LIMITE_DIARIO - presentes_hoje()),
@@ -730,7 +879,8 @@ class Handler(BaseHTTPRequestHandler):
         elif rota == "/checar":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             nick = (qs.get("nick") or [""])[0]
-            codigo, resposta = checar_nick(nick, ip)
+            token = (self.headers.get("X-Conta-Token") or "").strip()
+            codigo, resposta = checar_nick(nick, ip, token)
             self._responder(codigo, resposta)
         elif rota == "/admin/status":
             if not admin_autorizado(self.headers):
@@ -745,6 +895,8 @@ class Handler(BaseHTTPRequestHandler):
                 "idade_minima_dias": GIFT_IDADE_MINIMA_DIAS,
                 "limite_diario": GIFT_LIMITE_DIARIO,
                 "aparelhos_ligados": aparelhos_ligados(),
+                "contas_ligadas": contas_ligadas(),
+                "login_exigido": bool(FIREBASE_KEY and EXIGIR_LOGIN),
                 "teto_diario_creditos": GIFT_LIMITE_DIARIO * GIFT_CREDITOS,
             })
             self._responder(200, info)

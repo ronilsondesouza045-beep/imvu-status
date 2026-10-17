@@ -43,7 +43,7 @@ API = "https://api.imvu.com"
 UA = ("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
 
-APP_VERSAO = "1.3.2"
+APP_VERSAO = "1.4.0"
 REPO_GH = "ronilsondesouza045-beep/imvu-status"
 RELEASES_API = f"https://api.github.com/repos/{REPO_GH}/releases/latest"
 
@@ -52,6 +52,17 @@ RELEASES_API = f"https://api.github.com/repos/{REPO_GH}/releases/latest"
 # O app so conversa com esse servidor: sua conta e seus creditos NUNCA
 # ficam no APK nem aparecem na interface.
 PRESENTE_URL = "https://imvu-status-presente.onrender.com"
+
+# Login gratuito do app (Firebase Authentication - email e senha).
+# Para ativar: crie um projeto gratis em https://console.firebase.google.com,
+# ligue o metodo "E-mail/senha" em Authentication e cole a Web API Key abaixo
+# (e tambem no servidor: variavel FIREBASE_KEY). Passo a passo no README.
+FIREBASE_KEY = "COLE_AQUI_A_CHAVE_DO_FIREBASE"
+FB_SIGNUP = "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key="
+FB_LOGIN = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key="
+FB_LOOKUP = "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key="
+FB_OOB = "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key="
+FB_REFRESH = "https://securetoken.googleapis.com/v1/token?key="
 
 try:
     import certifi
@@ -117,6 +128,128 @@ def _id_aparelho():
             vid = ""
     _APARELHO_CACHE["id"] = vid
     return vid
+
+
+def _fb_post(url, dados):
+    corpo = json.dumps(dados).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=corpo, method="POST",
+        headers={"Content-Type": "application/json; charset=utf-8",
+                 "User-Agent": UA},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace")), None
+    except urllib.error.HTTPError as e:
+        try:
+            js = json.loads(e.read().decode("utf-8", errors="replace"))
+            msg = str(((js.get("error") or {}).get("message")) or "").strip()
+        except Exception:
+            msg = ""
+        return None, (msg or f"HTTP {e.code}")
+    except Exception as e:
+        return None, f"falha de rede: {e}"
+
+
+_ERROS_FB = {
+    "EMAIL_EXISTS": "esse email ja tem conta; toque em ENTRAR",
+    "EMAIL_NOT_FOUND": "email ou senha incorretos",
+    "INVALID_PASSWORD": "email ou senha incorretos",
+    "INVALID_LOGIN_CREDENTIALS": "email ou senha incorretos",
+    "INVALID_EMAIL": "email invalido",
+    "MISSING_PASSWORD": "digite a senha",
+    "MISSING_EMAIL": "digite o email",
+    "WEAK_PASSWORD": "senha muito curta (minimo 6 caracteres)",
+    "PASSWORD_DOES_NOT_MEET_REQUIREMENTS": "senha muito fraca; use 6+ caracteres",
+    "USER_DISABLED": "essa conta foi desativada",
+    "TOO_MANY_ATTEMPTS_TRY_LATER": "muitas tentativas; espere alguns minutos",
+    "QUOTA_EXCEEDED": "limite do servidor de login; tente mais tarde",
+}
+
+
+def _fb_err(msg):
+    chave = str(msg or "").split(" : ")[0].strip().upper()
+    return _ERROS_FB.get(chave, "nao deu para completar; tente de novo")
+
+
+_CONTA_ARQ = {"caminho": None}
+
+
+def _conta_arquivo():
+    if _CONTA_ARQ["caminho"] is None:
+        try:
+            from kivy.app import App
+            pasta = App.get_running_app().user_data_dir
+            os.makedirs(pasta, exist_ok=True)
+            _CONTA_ARQ["caminho"] = os.path.join(pasta, "conta.json")
+        except Exception:
+            _CONTA_ARQ["caminho"] = ""
+    return _CONTA_ARQ["caminho"]
+
+
+def conta_salvar(dados):
+    caminho = _conta_arquivo()
+    if not caminho:
+        return
+    try:
+        with open(caminho, "w", encoding="utf-8") as f:
+            json.dump(dados, f)
+    except Exception:
+        pass
+
+
+def conta_carregar():
+    caminho = _conta_arquivo()
+    if not caminho or not os.path.exists(caminho):
+        return {}
+    try:
+        with open(caminho, "r", encoding="utf-8") as f:
+            dados = json.load(f)
+        return dados if isinstance(dados, dict) else {}
+    except Exception:
+        return {}
+
+
+def conta_limpar():
+    caminho = _conta_arquivo()
+    try:
+        if caminho and os.path.exists(caminho):
+            os.remove(caminho)
+    except Exception:
+        pass
+
+
+def conta_ativa():
+    """Devolve a conta logada com idToken fresco, ou None.
+
+    Usa o refresh token salvo no aparelho; ninguem digita senha de novo.
+    """
+    guardado = conta_carregar()
+    refresh = guardado.get("refreshToken") or ""
+    if not refresh or "COLE_AQUI" in FIREBASE_KEY:
+        return None
+    js, erro = _fb_post(FB_REFRESH + FIREBASE_KEY, {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh,
+    })
+    if not js:
+        return None
+    dados = {
+        "idToken": js.get("id_token") or "",
+        "refreshToken": js.get("refresh_token") or refresh,
+        "email": guardado.get("email") or "",
+        "uid": js.get("user_id") or guardado.get("uid") or "",
+        "verificado": bool(guardado.get("verificado")),
+    }
+    if not dados["idToken"]:
+        return None
+    js2, _ = _fb_post(FB_LOOKUP + FIREBASE_KEY, {"idToken": dados["idToken"]})
+    if js2 and js2.get("users"):
+        u = js2["users"][0]
+        dados["email"] = u.get("email") or dados["email"]
+        dados["verificado"] = bool(u.get("emailVerified"))
+    conta_salvar(dados)
+    return dados
 
 
 class ClienteIMVU:
@@ -394,6 +527,100 @@ def fmt_sala(info):
 
 
 KV = """
+<LoginScreen>:
+    MDBoxLayout:
+        orientation: "vertical"
+        md_bg_color: 0.07, 0.08, 0.11, 1
+
+        ScrollView:
+            do_scroll_x: False
+            MDBoxLayout:
+                orientation: "vertical"
+                size_hint_y: None
+                height: self.minimum_height
+                padding: dp(20)
+                spacing: dp(10)
+
+                Image:
+                    source: "assets/banner_login.jpg"
+                    size_hint_y: None
+                    height: dp(150)
+                    fit_mode: "contain"
+
+                MDLabel:
+                    markup: True
+                    halign: "center"
+                    text: "[b]IMVU Status[/b]"
+                    size_hint_y: None
+                    height: self.texture_size[1]
+                    text_size: self.width, None
+
+                MDLabel:
+                    halign: "center"
+                    markup: True
+                    text: "Entre com seu email para resgatar os 100 creditos gratis"
+                    size_hint_y: None
+                    height: self.texture_size[1]
+                    text_size: self.width, None
+
+                MDTextField:
+                    id: conta_email
+                    hint_text: "email"
+                    mode: "rectangle"
+                    on_text_validate: root.acao_principal()
+
+                MDTextField:
+                    id: conta_senha
+                    hint_text: "senha"
+                    password: True
+                    mode: "rectangle"
+                    on_text_validate: root.acao_principal()
+
+                MDTextField:
+                    id: conta_senha2
+                    hint_text: "repita a senha"
+                    password: True
+                    mode: "rectangle"
+                    opacity: 0
+                    disabled: True
+                    size_hint_y: None
+                    height: 0
+                    on_text_validate: root.acao_principal()
+
+                MDSpinner:
+                    id: login_spinner
+                    size_hint: None, None
+                    size: dp(32), dp(32)
+                    pos_hint: {"center_x": .5}
+                    active: False
+
+                MDRaisedButton:
+                    id: login_btn
+                    text: "ENTRAR"
+                    pos_hint: {"center_x": .5}
+                    on_release: root.acao_principal()
+
+                MDFlatButton:
+                    id: login_modo
+                    text: "nao tem conta? CRIAR CONTA"
+                    pos_hint: {"center_x": .5}
+                    on_release: root.mudar_modo()
+
+                MDFlatButton:
+                    id: login_esqueci
+                    text: "esqueci a senha"
+                    pos_hint: {"center_x": .5}
+                    on_release: root.esqueci_senha()
+
+                MDLabel:
+                    id: login_aviso
+                    markup: True
+                    halign: "center"
+                    text: ""
+                    size_hint_y: None
+                    height: self.texture_size[1]
+                    text_size: self.width, None
+
 <MainScreen>:
     MDBoxLayout:
         orientation: "vertical"
@@ -514,8 +741,20 @@ KV = """
                         padding: dp(16)
                         spacing: dp(12)
                         MDLabel:
+                            id: conta_app
                             markup: True
-                            text: "Login opcional na SUA conta. A senha vai somente para o IMVU; nada e salvo no aparelho."
+                            text: ""
+                            size_hint_y: None
+                            height: self.texture_size[1]
+                            text_size: self.width, None
+                        MDFlatButton:
+                            id: btn_sair_app
+                            text: "SAIR DA CONTA DO APP (email)"
+                            pos_hint: {"center_x": .5}
+                            on_release: root.sair_conta_app()
+                        MDLabel:
+                            markup: True
+                            text: "Login opcional na SUA conta IMVU. A senha vai somente para o IMVU; nada e salvo no aparelho."
                             size_hint_y: None
                             height: self.texture_size[1]
                             text_size: self.width, None
@@ -684,6 +923,130 @@ KV = """
 """
 
 
+class LoginScreen(MDScreen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.modo_criar = False
+        self._ocupado = False
+
+    def _ligada(self):
+        return "COLE_AQUI" not in FIREBASE_KEY
+
+    def _aviso(self, texto, cor=None):
+        self.ids.login_aviso.text = f"[color={cor or AMARELO}]{texto}[/color]"
+
+    def mudar_modo(self):
+        self.modo_criar = not self.modo_criar
+        self.ids.login_btn.text = "CRIAR CONTA" if self.modo_criar else "ENTRAR"
+        self.ids.login_modo.text = ("ja tenho conta? ENTRAR" if self.modo_criar
+                                    else "nao tem conta? CRIAR CONTA")
+        self.ids.conta_senha2.opacity = 1 if self.modo_criar else 0
+        self.ids.conta_senha2.disabled = not self.modo_criar
+        self.ids.conta_senha2.height = dp(56) if self.modo_criar else 0
+        self.ids.login_aviso.text = ""
+
+    def acao_principal(self):
+        if not self._ligada():
+            self._aviso("O login ainda nao foi ativado pelo dono do app.")
+            return
+        email = (self.ids.conta_email.text or "").strip()
+        senha = self.ids.conta_senha.text or ""
+        if "@" not in email or "." not in email.split("@")[-1]:
+            self._aviso("digite um email valido")
+            return
+        if len(senha) < 6:
+            self._aviso("a senha precisa de pelo menos 6 caracteres")
+            return
+        if self.modo_criar and senha != (self.ids.conta_senha2.text or ""):
+            self._aviso("as duas senhas precisam ser iguais")
+            return
+        if self._ocupado:
+            return
+        self._ocupado = True
+        self.ids.login_spinner.active = True
+        self._aviso("criando conta..." if self.modo_criar else "entrando...", VERDE)
+        threading.Thread(target=self._t_principal,
+                         args=(email, senha, self.modo_criar), daemon=True).start()
+
+    def _t_principal(self, email, senha, modo_criar):
+        if modo_criar:
+            js, erro = _fb_post(FB_SIGNUP + FIREBASE_KEY, {
+                "email": email, "password": senha, "returnSecureToken": True,
+            })
+            if js and js.get("idToken"):
+                _fb_post(FB_OOB + FIREBASE_KEY, {
+                    "requestType": "VERIFY_EMAIL", "idToken": js["idToken"],
+                })
+        else:
+            js, erro = _fb_post(FB_LOGIN + FIREBASE_KEY, {
+                "email": email, "password": senha, "returnSecureToken": True,
+            })
+        if js:
+            dados = {
+                "idToken": js.get("idToken") or "",
+                "refreshToken": js.get("refreshToken") or "",
+                "email": js.get("email") or email,
+                "uid": js.get("localId") or "",
+                "verificado": False,
+            }
+            js2, _ = _fb_post(FB_LOOKUP + FIREBASE_KEY, {"idToken": dados["idToken"]})
+            if js2 and js2.get("users"):
+                dados["verificado"] = bool(js2["users"][0].get("emailVerified"))
+            if dados["idToken"] and dados["refreshToken"]:
+                conta_salvar(dados)
+            else:
+                js = None
+                erro = "resposta inesperada do servidor de login"
+        Clock.schedule_once(lambda dt: self._mostrar(modo_criar, js, erro), 0)
+
+    def _mostrar(self, era_criar, js, erro):
+        self._ocupado = False
+        self.ids.login_spinner.active = False
+        if not js:
+            self._aviso(_fb_err(erro), VERMELHO)
+            return
+        if era_criar:
+            if self.modo_criar:
+                self.mudar_modo()
+            self._aviso(
+                "conta criada! Enviamos um link de confirmacao para seu email. "
+                "Confirme e toque em ENTRAR.", VERDE)
+            return
+        try:
+            MDApp.get_running_app().ir_principal()
+        except Exception:
+            pass
+
+    def esqueci_senha(self):
+        if not self._ligada():
+            self._aviso("O login ainda nao foi ativado pelo dono do app.")
+            return
+        email = (self.ids.conta_email.text or "").strip()
+        if "@" not in email:
+            self._aviso("digite seu email no campo de cima primeiro")
+            return
+        if self._ocupado:
+            return
+        self._ocupado = True
+        self.ids.login_spinner.active = True
+        threading.Thread(target=self._t_esqueci, args=(email,), daemon=True).start()
+
+    def _t_esqueci(self, email):
+        js, erro = _fb_post(FB_OOB + FIREBASE_KEY, {
+            "requestType": "PASSWORD_RESET", "email": email,
+        })
+        Clock.schedule_once(lambda dt: self._mostrar_esqueci(js, erro), 0)
+
+    def _mostrar_esqueci(self, js, erro):
+        self._ocupado = False
+        self.ids.login_spinner.active = False
+        if js:
+            self._aviso("se esse email tiver conta, mandamos um link para trocar "
+                        "a senha. Olhe a caixa de entrada (e o spam).", VERDE)
+        else:
+            self._aviso(_fb_err(erro), VERMELHO)
+
+
 class MainScreen(MDScreen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -693,6 +1056,30 @@ class MainScreen(MDScreen):
         self._update_url = None
         self._manual_update = False
         self._presente_ocupado = False
+
+    def on_enter(self, *args):
+        self._atualizar_conta_app()
+
+    def _atualizar_conta_app(self):
+        try:
+            dados = conta_carregar()
+        except Exception:
+            dados = {}
+        if dados.get("email"):
+            if dados.get("verificado"):
+                selo = f"[color={VERDE}]confirmado[/color]"
+            else:
+                selo = f"[color={AMARELO}]confirme o email (veja sua caixa de entrada)[/color]"
+            self.ids.conta_app.text = f"Conta do app: [b]{_limpa(dados['email'])}[/b] - {selo}"
+        else:
+            self.ids.conta_app.text = "Sem conta do app: o resgate fica bloqueado."
+
+    def sair_conta_app(self):
+        conta_limpar()
+        try:
+            MDApp.get_running_app().ir_login()
+        except Exception:
+            pass
 
     def checar_nick(self):
         nick = (self.ids.nick_field.text or "").strip()
@@ -865,9 +1252,13 @@ class MainScreen(MDScreen):
         threading.Thread(target=self._t_verificar, args=(nick,), daemon=True).start()
 
     def _t_verificar(self, nick):
+        dados = conta_ativa()
         try:
             url = PRESENTE_URL.rstrip("/") + "/checar?" + urllib.parse.urlencode({"nick": nick})
-            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            cabecalho = {"User-Agent": UA}
+            if dados:
+                cabecalho["X-Conta-Token"] = dados["idToken"]
+            req = urllib.request.Request(url, headers=cabecalho)
             with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
                 js = json.loads(resp.read().decode("utf-8", errors="replace"))
             erro = None
@@ -945,11 +1336,17 @@ class MainScreen(MDScreen):
         threading.Thread(target=self._t_presente, args=(nick, mensagem), daemon=True).start()
 
     def _t_presente(self, nick, mensagem):
+        dados = conta_ativa()
+        if not dados:
+            Clock.schedule_once(lambda dt: self._mostrar_presente(
+                None, "entre na sua conta do app primeiro (aba CONTA)"), 0)
+            return
         try:
             corpo = json.dumps({
                 "nick": nick,
                 "mensagem": mensagem,
                 "aparelho": _id_aparelho(),
+                "token": dados["idToken"],
             }).encode("utf-8")
             req = urllib.request.Request(
                 PRESENTE_URL.rstrip("/") + "/gift",
@@ -1061,7 +1458,23 @@ class IMVUStatusApp(MDApp):
         self.theme_cls.primary_palette = "Teal"
         self.theme_cls.accent_palette = "Cyan"
         Builder.load_string(KV)
-        return MainScreen()
+        from kivy.uix.screenmanager import ScreenManager
+        self.sm = ScreenManager()
+        self.sm.add_widget(LoginScreen(name="login"))
+        self.sm.add_widget(MainScreen(name="principal"))
+        return self.sm
+
+    def ir_principal(self):
+        try:
+            self.sm.current = "principal"
+        except Exception:
+            pass
+
+    def ir_login(self):
+        try:
+            self.sm.current = "login"
+        except Exception:
+            pass
 
     def on_start(self):
         try:
@@ -1070,10 +1483,27 @@ class IMVUStatusApp(MDApp):
         except Exception:
             pass
         try:
-            self.root.ids.app_versao.text = f"Versao instalada: [b]v{APP_VERSAO}[/b]"
+            principal = self.root.get_screen("principal")
+            principal.ids.app_versao.text = f"Versao instalada: [b]v{APP_VERSAO}[/b]"
+            Clock.schedule_once(lambda dt: principal.verificar_update(False), 3)
         except Exception:
             pass
-        Clock.schedule_once(lambda dt: self.root.verificar_update(False), 3)
+        threading.Thread(target=self._t_auto_login, daemon=True).start()
+
+    def _t_auto_login(self):
+        dados = conta_ativa()
+        if dados:
+            Clock.schedule_once(lambda dt: self.ir_principal(), 0)
+        elif conta_carregar().get("refreshToken"):
+            Clock.schedule_once(lambda dt: self._aviso_login(
+                "nao deu para renovar o login agora; toque em ENTRAR. "
+                "(se persistir, saia e entre de novo)"), 0)
+
+    def _aviso_login(self, texto):
+        try:
+            self.root.get_screen("login")._aviso(texto)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

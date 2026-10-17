@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: imvu-status-presente
+    runtime: python
+    plan: free
+    buildCommand: ""
+    startCommand: python server/app.py
+    envVars:
+      - key: IMVU_SESSAO
+        sync: false
+      - key: IMVU_USER
+        sync: false
+      - key: IMVU_PASS
+        sync: false
+      - key: GIFT_PRODUCT_ID
+        sync: false
+      - key: GIFT_CREDITOS
+        value: "500"
+      - key: GIFT_LIMITE_PESSOA
+        value: "1"
+      - key: GIFT_LIMITE_DIARIO
+        value: "10"
+      - key: GIFT_MENSAGEM
+        sync: false
+      - key: ADMIN_TOKEN
+        sync: false

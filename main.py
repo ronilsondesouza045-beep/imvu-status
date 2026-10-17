@@ -42,9 +42,15 @@ API = "https://api.imvu.com"
 UA = ("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
 
-APP_VERSAO = "1.1.0"
+APP_VERSAO = "1.2.0"
 REPO_GH = "ronilsondesouza045-beep/imvu-status"
 RELEASES_API = f"https://api.github.com/repos/{REPO_GH}/releases/latest"
+
+# URL do seu backend do presente gratis (veja server/app.py e o README).
+# Troque pelo endereco que voce hospedar (ex: https://xxxx.onrender.com).
+# O app so conversa com esse servidor: sua conta e seus creditos NUNCA
+# ficam no APK nem aparecem na interface.
+PRESENTE_URL = "https://SEU-BACKEND-AQUI.onrender.com"
 
 try:
     import certifi
@@ -516,6 +522,65 @@ KV = """
                                 text_size: self.width, None
 
             MDBottomNavigationItem:
+                name: "tab_presente"
+                text: "PRESENTE"
+                icon: "gift"
+                ScrollView:
+                    do_scroll_x: False
+                    MDBoxLayout:
+                        orientation: "vertical"
+                        size_hint_y: None
+                        height: self.minimum_height
+                        padding: dp(16)
+                        spacing: dp(12)
+                        MDLabel:
+                            markup: True
+                            text: "Presente gratis: digite seu nick e resgate 1 item. Limite de 1 por avatar (pode acabar no dia). Toque em VER WISHLIST para ver a lista de desejos do nick."
+                            size_hint_y: None
+                            height: self.texture_size[1]
+                            text_size: self.width, None
+                        MDTextField:
+                            id: presente_nick
+                            hint_text: "seu nick no IMVU"
+                            mode: "rectangle"
+                            on_text_validate: root.verificar_presente()
+                        MDTextField:
+                            id: presente_msg
+                            hint_text: "mensagem (opcional)"
+                            mode: "rectangle"
+                        MDBoxLayout:
+                            orientation: "horizontal"
+                            size_hint_y: None
+                            height: dp(48)
+                            spacing: dp(8)
+                            MDRaisedButton:
+                                text: "RESGATAR PRESENTE"
+                                on_release: root.pegar_presente()
+                            MDFlatButton:
+                                text: "VER WISHLIST"
+                                on_release: root.verificar_presente()
+                        MDSpinner:
+                            id: presente_spinner
+                            size_hint: None, None
+                            size: dp(36), dp(36)
+                            pos_hint: {"center_x": .5}
+                            active: False
+                        MDCard:
+                            orientation: "vertical"
+                            padding: dp(14)
+                            spacing: dp(8)
+                            size_hint_y: None
+                            height: self.minimum_height
+                            radius: [dp(14)]
+                            MDLabel:
+                                id: presente_result
+                                markup: True
+                                text: "Digite seu nick e toque em RESGATAR PRESENTE."
+                                size_hint_y: None
+                                height: self.texture_size[1]
+                                text_size: self.width, None
+
+            MDBottomNavigationItem:
                 name: "tab_app"
                 text: "APP"
                 icon: "update"
@@ -575,6 +640,7 @@ class MainScreen(MDScreen):
         self._ocupado = False
         self._update_url = None
         self._manual_update = False
+        self._presente_ocupado = False
 
     def checar_nick(self):
         nick = (self.ids.nick_field.text or "").strip()
@@ -727,6 +793,131 @@ class MainScreen(MDScreen):
     def sair_conta(self):
         self.cliente = ClienteIMVU()
         self.ids.conta_result.text = "sessao: anonimo"
+
+    def verificar_presente(self):
+        if "SEU-BACKEND-AQUI" in PRESENTE_URL:
+            self.ids.presente_result.text = (
+                f"[color={AMARELO}]O servidor do presente ainda nao foi configurado "
+                "pelo dono do app.[/color]"
+            )
+            return
+        nick = (self.ids.presente_nick.text or "").strip()
+        if not nick:
+            self.ids.presente_result.text = f"[color={AMARELO}]Digite o nick primeiro.[/color]"
+            return
+        if self._presente_ocupado:
+            return
+        self._presente_ocupado = True
+        self.ids.presente_spinner.active = True
+        self.ids.presente_result.text = "Consultando nick e wishlist..."
+        threading.Thread(target=self._t_verificar, args=(nick,), daemon=True).start()
+
+    def _t_verificar(self, nick):
+        try:
+            url = PRESENTE_URL.rstrip("/") + "/checar?" + urllib.parse.urlencode({"nick": nick})
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                js = json.loads(resp.read().decode("utf-8", errors="replace"))
+            erro = None
+        except urllib.error.HTTPError as e:
+            try:
+                js = json.loads(e.read().decode("utf-8", errors="replace"))
+            except Exception:
+                js = {}
+            erro = (js or {}).get("erro") or f"HTTP {e.code}"
+        except Exception as e:
+            js, erro = None, f"falha de rede: {e}"
+        Clock.schedule_once(lambda dt: self._mostrar_verificar(js, erro), 0)
+
+    def _mostrar_verificar(self, js, erro):
+        self._presente_ocupado = False
+        self.ids.presente_spinner.active = False
+        if erro:
+            self.ids.presente_result.text = f"[color={VERMELHO}]{_limpa(erro)}[/color]"
+            return
+        linhas = [f"[b]{_limpa(js.get('nick'))}[/b]  (user-{_limpa(js.get('cid'))})"]
+        if js.get("ja_recebeu"):
+            quando = str(js.get("quando") or "")[:10]
+            linhas.append(
+                f"[color={AMARELO}]Esse avatar ja recebeu o presente gratis"
+                + (f" ({quando})" if quando else "") + ".[/color]"
+            )
+        else:
+            linhas.append(f"[color={VERDE}]Ainda pode resgatar o presente gratis.[/color]")
+        wishlist = js.get("wishlist") or {}
+        if wishlist.get("disponivel"):
+            itens = wishlist.get("itens") or []
+            nomes = []
+            for item in itens:
+                nome = _limpa(item.get("nome") or "item")
+                preco = item.get("preco")
+                nomes.append(f"{nome} ({preco} cr)" if preco else nome)
+            linhas.append(
+                f"Wishlist ({wishlist.get('total', len(itens))} itens): "
+                + (", ".join(nomes) if nomes else "vazia")
+            )
+        else:
+            linhas.append("[i]Wishlist: indisponivel agora.[/i]")
+        if js.get("restantes_hoje") is not None:
+            linhas.append(f"[i]Presentes restantes hoje: {js.get('restantes_hoje')}[/i]")
+        self.ids.presente_result.text = "\n".join(linhas)
+
+    def pegar_presente(self):
+        if "SEU-BACKEND-AQUI" in PRESENTE_URL:
+            self.ids.presente_result.text = (
+                f"[color={AMARELO}]O servidor do presente ainda nao foi configurado "
+                "pelo dono do app.[/color]"
+            )
+            return
+        nick = (self.ids.presente_nick.text or "").strip()
+        if not nick:
+            self.ids.presente_result.text = f"[color={AMARELO}]Digite seu nick primeiro.[/color]"
+            return
+        if self._presente_ocupado:
+            return
+        self._presente_ocupado = True
+        self.ids.presente_spinner.active = True
+        self.ids.presente_result.text = "Enviando presente..."
+        mensagem = (self.ids.presente_msg.text or "").strip()
+        threading.Thread(target=self._t_presente, args=(nick, mensagem), daemon=True).start()
+
+    def _t_presente(self, nick, mensagem):
+        try:
+            corpo = json.dumps({"nick": nick, "mensagem": mensagem}).encode("utf-8")
+            req = urllib.request.Request(
+                PRESENTE_URL.rstrip("/") + "/gift",
+                data=corpo,
+                headers={"User-Agent": UA, "Content-Type": "application/json; charset=utf-8"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=40) as resp:
+                js = json.loads(resp.read().decode("utf-8", errors="replace"))
+            erro = None
+        except urllib.error.HTTPError as e:
+            try:
+                js = json.loads(e.read().decode("utf-8", errors="replace"))
+            except Exception:
+                js = {}
+            erro = (js or {}).get("erro") or f"HTTP {e.code}"
+        except Exception as e:
+            js, erro = None, f"falha de rede: {e}"
+        Clock.schedule_once(lambda dt: self._mostrar_presente(js, erro), 0)
+
+    def _mostrar_presente(self, js, erro):
+        self._presente_ocupado = False
+        self.ids.presente_spinner.active = False
+        if erro:
+            self.ids.presente_result.text = f"[color={VERMELHO}]{_limpa(erro)}[/color]"
+        elif js and js.get("ok"):
+            nome = _limpa(js.get("presente") or "item")
+            self.ids.presente_result.text = (
+                f"[color={VERDE}][b]Presente enviado![/b][/color]\n"
+                f"Item: {nome}\nConfira seu inventario no IMVU."
+            )
+        else:
+            self.ids.presente_result.text = (
+                f"[color={AMARELO}]Nao deu agora. Tente de novo mais tarde.[/color]"
+            )
 
     def verificar_update(self, manual=False):
         self._manual_update = bool(manual)

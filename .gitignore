@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 cookies.json
 .gradle/
+server/dados/

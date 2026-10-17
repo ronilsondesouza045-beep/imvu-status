@@ -17,6 +17,8 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD":/home/user/hostcwd \
+            -v "$PWD/ci":/home/user/.config \
+            -e PIP_CONSTRAINT=/home/user/hostcwd/ci/pip-constraint.txt \
             kivy/buildozer:latest android debug
 
       - name: Enviar APK como artifact

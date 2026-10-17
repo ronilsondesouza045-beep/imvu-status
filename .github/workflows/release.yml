@@ -27,7 +27,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          git fetch --force --tags
+          NOTAS="$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME")"
+          if [ -z "$NOTAS" ]; then NOTAS="Versao $GITHUB_REF_NAME"; fi
           gh release create "$GITHUB_REF_NAME" bin/*.apk \
             --title "$GITHUB_REF_NAME" \
-            --notes-from-tag \
+            --notes "$NOTAS" \
             --verify-tag

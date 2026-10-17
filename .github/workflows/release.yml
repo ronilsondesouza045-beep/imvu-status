@@ -15,14 +15,6 @@ jobs:
       - name: Baixar codigo
         uses: actions/checkout@v4
 
-      - name: Diagnostico keystore
-        run: |
-          echo "quem sou eu no container e onde os mounts aparecem:"
-          docker run --rm \
-            -v "$PWD/ci/.android":/home/user/.android \
-            -v "$PWD/ci/.android":/root/.android \
-            kivy/buildozer:latest bash -c "echo USER=$(whoami) ID=$(id -u); ls -la /home/user/.android/debug.keystore /root/.android/debug.keystore 2>&1"
-
       - name: Compilar APK (Docker oficial do Kivy)
         run: |
           docker run --rm \

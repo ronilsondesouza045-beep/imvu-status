@@ -18,10 +18,15 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+import base64
 import datetime
 import hashlib
 import os
+import secrets
+import time
 import webbrowser
+
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from kivy.clock import Clock
 from kivy.lang import Builder
@@ -32,8 +37,8 @@ from kivymd.uix.screen import MDScreen
 from kivymd.uix.toolbar import MDTopAppBar  # noqa: F401
 from kivymd.uix.bottomnavigation import MDBottomNavigation, MDBottomNavigationItem  # noqa: F401
 from kivymd.uix.card import MDCard  # noqa: F401
-from kivymd.uix.label import MDLabel  # noqa: F401
-from kivymd.uix.button import MDRaisedButton, MDFlatButton  # noqa: F401
+from kivymd.uix.label import MDLabel, MDIcon  # noqa: F401
+from kivymd.uix.button import MDRaisedButton, MDFlatButton, MDFillRoundFlatIconButton  # noqa: F401
 from kivymd.uix.textfield import MDTextField  # noqa: F401
 from kivymd.uix.spinner import MDSpinner  # noqa: F401
 from kivymd.uix.boxlayout import MDBoxLayout  # noqa: F401
@@ -43,7 +48,7 @@ API = "https://api.imvu.com"
 UA = ("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
 
-APP_VERSAO = "1.4.0"
+APP_VERSAO = "1.5.0"
 REPO_GH = "ronilsondesouza045-beep/imvu-status"
 RELEASES_API = f"https://api.github.com/repos/{REPO_GH}/releases/latest"
 
@@ -63,6 +68,14 @@ FB_LOGIN = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPasswor
 FB_LOOKUP = "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key="
 FB_OOB = "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key="
 FB_REFRESH = "https://securetoken.googleapis.com/v1/token?key="
+FB_IDP = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key="
+
+# Entrada com Google: crie um "ID do cliente OAuth" do tipo "Aplicativo para
+# computador" no Google Cloud Console do projeto e cole os dois valores aqui.
+GOOGLE_CLIENT_ID = ""
+GOOGLE_CLIENT_SECRET = ""
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 try:
     import certifi
@@ -164,12 +177,173 @@ _ERROS_FB = {
     "USER_DISABLED": "essa conta foi desativada",
     "TOO_MANY_ATTEMPTS_TRY_LATER": "muitas tentativas; espere alguns minutos",
     "QUOTA_EXCEEDED": "limite do servidor de login; tente mais tarde",
+    "FEDERATED_USER_ID_ALREADY_LINKED": "esse email ja tem conta; entre com o email e a senha",
+    "ACCOUNT_EXISTS_WITH_DIFFERENT_CREDENTIAL": "esse email ja tem conta; entre com o email e a senha",
 }
 
 
 def _fb_err(msg):
     chave = str(msg or "").split(" : ")[0].strip().upper()
     return _ERROS_FB.get(chave, "nao deu para completar; tente de novo")
+
+
+def _post_form(url, dados):
+    corpo = urllib.parse.urlencode(dados).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=corpo, method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded",
+                 "User-Agent": UA},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace")), None
+    except urllib.error.HTTPError as e:
+        try:
+            js = json.loads(e.read().decode("utf-8", errors="replace"))
+            err = js.get("error")
+            msg = str((js.get("error_description") or (err if isinstance(err, str) else "")) or "").strip()
+        except Exception:
+            msg = ""
+        return None, (msg or f"HTTP {e.code}")
+    except Exception as e:
+        return None, f"falha de rede: {e}"
+
+
+def _abrir_url(url):
+    try:
+        from android import open_url
+        open_url(url)
+        return True
+    except Exception:
+        pass
+    try:
+        return webbrowser.open(url)
+    except Exception:
+        return False
+
+
+def _email_mascarado(email):
+    email = str(email or "")
+    if "@" not in email:
+        return email
+    usuario, dominio = email.split("@", 1)
+    if len(usuario) <= 2:
+        return usuario[:1] + "***@" + dominio
+    return usuario[:1] + "***" + usuario[-1] + "@" + dominio
+
+
+def _google_ligado():
+    return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+
+
+_PAGINA_OK = ("<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+              "<title>IMVU Status</title><style>"
+              "body{margin:0;height:100vh;display:flex;align-items:center;"
+              "justify-content:center;background:#0f172a;color:#e2e8f0;"
+              "font-family:sans-serif;text-align:center}h1{font-size:22px}"
+              "p{color:#94a3b8}</style></head><body><div><h1>Tudo certo!</h1>"
+              "<p>Login concluido. Pode fechar esta aba e voltar para o app"
+              " IMVU Status.</p></div></body></html>")
+
+
+def google_login_flow():
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("utf-8")).digest()).rstrip(b"=").decode("ascii")
+    estado = secrets.token_urlsafe(16)
+    resultado = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            resultado["code"] = (params.get("code") or [""])[0]
+            resultado["error"] = (params.get("error") or [""])[0]
+            resultado["state"] = (params.get("state") or [""])[0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            try:
+                self.wfile.write(_PAGINA_OK.encode("utf-8"))
+            except Exception:
+                pass
+
+        def log_message(self, *args):
+            pass
+
+    try:
+        httpd = HTTPServer(("127.0.0.1", 0), Handler)
+    except Exception as e:
+        return None, f"nao consegui abrir a porta local: {e}"
+    httpd.timeout = 1
+    porta = httpd.server_address[1]
+    redirect = f"http://127.0.0.1:{porta}"
+    url = GOOGLE_AUTH_URL + "?" + urllib.parse.urlencode({
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": redirect,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": estado,
+        "prompt": "select_account",
+    })
+    if not _abrir_url(url):
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
+        return None, "NAO_ABRIU_NAVEGADOR"
+    inicio = time.time()
+    try:
+        while time.time() - inicio < 300:
+            httpd.handle_request()
+            if resultado.get("code") or resultado.get("error"):
+                break
+    finally:
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
+    if resultado.get("error"):
+        if resultado["error"] == "access_denied":
+            return None, "login cancelado (ou bloqueado pelo Google; tente de novo)"
+        return None, str(resultado["error"])
+    code = resultado.get("code") or ""
+    if not code:
+        return None, "o login demorou demais; tente de novo"
+    if resultado.get("state") != estado:
+        return None, "resposta inesperada do Google; tente de novo"
+    js, erro = _post_form(GOOGLE_TOKEN_URL, {
+        "code": code,
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "redirect_uri": redirect,
+        "grant_type": "authorization_code",
+        "code_verifier": verifier,
+    })
+    if not js or not js.get("id_token"):
+        return None, erro or "o Google nao devolveu o login"
+    js2, erro2 = _fb_post(FB_IDP + FIREBASE_KEY, {
+        "postBody": "id_token=%s&providerId=google.com" % js["id_token"],
+        "requestUri": "http://localhost",
+        "returnIdpCredential": True,
+        "returnSecureToken": True,
+    })
+    if not js2 or not js2.get("idToken"):
+        return None, erro2 or "nao deu para entrar com o Google"
+    dados = {
+        "idToken": js2.get("idToken") or "",
+        "refreshToken": js2.get("refreshToken") or "",
+        "email": js2.get("email") or "",
+        "uid": js2.get("localId") or "",
+        "verificado": True,
+    }
+    js3, _ = _fb_post(FB_LOOKUP + FIREBASE_KEY, {"idToken": dados["idToken"]})
+    if js3 and js3.get("users"):
+        u = js3["users"][0]
+        dados["email"] = u.get("email") or dados["email"]
+        dados["verificado"] = bool(u.get("emailVerified"))
+    return dados, None
 
 
 _CONTA_ARQ = {"caminho": None}
@@ -530,7 +704,13 @@ KV = """
 <LoginScreen>:
     MDBoxLayout:
         orientation: "vertical"
-        md_bg_color: 0.07, 0.08, 0.11, 1
+        canvas.before:
+            Color:
+                rgba: 1, 1, 1, .45
+            Rectangle:
+                pos: self.pos
+                size: self.size
+                source: "assets/fundo_app.jpg"
 
         ScrollView:
             do_scroll_x: False
@@ -613,6 +793,21 @@ KV = """
                     on_release: root.esqueci_senha()
 
                 MDLabel:
+                    halign: "center"
+                    markup: True
+                    text: "ou"
+                    size_hint_y: None
+                    height: self.texture_size[1]
+                    text_size: self.width, None
+
+                MDFillRoundFlatIconButton:
+                    id: login_google
+                    icon: "google"
+                    text: "  CONECTAR COM GOOGLE"
+                    pos_hint: {"center_x": .5}
+                    on_release: root.entrar_google()
+
+                MDLabel:
                     id: login_aviso
                     markup: True
                     halign: "center"
@@ -624,10 +819,18 @@ KV = """
 <MainScreen>:
     MDBoxLayout:
         orientation: "vertical"
+        canvas.before:
+            Color:
+                rgba: 1, 1, 1, .45
+            Rectangle:
+                pos: self.pos
+                size: self.size
+                source: "assets/fundo_app.jpg"
 
         MDTopAppBar:
             title: "IMVU Status"
             elevation: 3
+            md_bg_color: 0.06, 0.08, 0.12, .97
 
         MDBottomNavigation:
             panel_color: 0.08, 0.09, 0.12, 1
@@ -731,7 +934,7 @@ KV = """
             MDBottomNavigationItem:
                 name: "tab_conta"
                 text: "CONTA"
-                icon: "login"
+                icon: "account-circle"
                 ScrollView:
                     do_scroll_x: False
                     MDBoxLayout:
@@ -740,54 +943,140 @@ KV = """
                         height: self.minimum_height
                         padding: dp(16)
                         spacing: dp(12)
-                        MDLabel:
-                            id: conta_app
-                            markup: True
-                            text: ""
-                            size_hint_y: None
-                            height: self.texture_size[1]
-                            text_size: self.width, None
-                        MDFlatButton:
-                            id: btn_sair_app
-                            text: "SAIR DA CONTA DO APP (email)"
-                            pos_hint: {"center_x": .5}
-                            on_release: root.sair_conta_app()
-                        MDLabel:
-                            markup: True
-                            text: "Login opcional na SUA conta IMVU. A senha vai somente para o IMVU; nada e salvo no aparelho."
-                            size_hint_y: None
-                            height: self.texture_size[1]
-                            text_size: self.width, None
-                        MDTextField:
-                            id: login_user
-                            hint_text: "usuario IMVU"
-                            mode: "rectangle"
-                        MDTextField:
-                            id: login_pass
-                            hint_text: "senha"
-                            password: True
-                            mode: "rectangle"
-                        MDTextField:
-                            id: login_code
-                            hint_text: "codigo 2FA (so se o IMVU pedir)"
-                            mode: "rectangle"
-                        MDBoxLayout:
-                            orientation: "horizontal"
-                            size_hint_y: None
-                            height: dp(48)
-                            spacing: dp(8)
-                            MDRaisedButton:
-                                text: "ENTRAR"
-                                on_release: root.fazer_login()
-                            MDFlatButton:
-                                text: "SAIR"
-                                on_release: root.sair_conta()
+
                         MDCard:
                             orientation: "vertical"
-                            padding: dp(14)
+                            padding: dp(16)
+                            spacing: dp(4)
                             size_hint_y: None
                             height: self.minimum_height
-                            radius: [dp(14)]
+                            radius: [dp(18)]
+                            md_bg_color: 0.10, 0.12, 0.17, .96
+                            Image:
+                                source: "assets/capa_conta.jpg"
+                                size_hint_y: None
+                                height: dp(110)
+                                fit_mode: "cover"
+                            MDBoxLayout:
+                                orientation: "horizontal"
+                                size_hint_y: None
+                                height: dp(52)
+                                spacing: dp(6)
+                                MDIcon:
+                                    icon: "account-circle"
+                                    font_size: dp(44)
+                                    theme_text_color: "Custom"
+                                    text_color: 0.30, 0.80, 0.85, 1
+                                    size_hint: None, None
+                                    size: dp(50), dp(50)
+                                    pos_hint: {"center_y": .5}
+                                MDBoxLayout:
+                                    orientation: "vertical"
+                                    pos_hint: {"center_y": .5}
+                                    MDLabel:
+                                        markup: True
+                                        text: "[b]Minha conta[/b]"
+                                        size_hint_y: None
+                                        height: self.texture_size[1]
+                                        text_size: self.width, None
+                                    MDLabel:
+                                        id: conta_status
+                                        markup: True
+                                        text: "carregando..."
+                                        font_style: "Caption"
+                                        theme_text_color: "Custom"
+                                        text_color: 0.60, 0.66, 0.72, 1
+                                        size_hint_y: None
+                                        height: self.texture_size[1]
+                                        text_size: self.width, None
+                            MDBoxLayout:
+                                orientation: "horizontal"
+                                size_hint_y: None
+                                height: dp(42)
+                                MDLabel:
+                                    id: conta_email
+                                    markup: True
+                                    text: ""
+                                    font_style: "Caption"
+                                    theme_text_color: "Custom"
+                                    text_color: 0.65, 0.72, 0.78, 1
+                                    size_hint_y: None
+                                    height: self.texture_size[1]
+                                    text_size: self.width, None
+                                MDIconButton:
+                                    id: btn_ver_email
+                                    icon: "eye"
+                                    theme_text_color: "Custom"
+                                    text_color: 0.65, 0.72, 0.78, 1
+                                    on_release: root.alternar_email()
+                            MDFlatButton:
+                                id: btn_sair_app
+                                text: "SAIR DA CONTA"
+                                theme_text_color: "Custom"
+                                text_color: 0.94, 0.42, 0.42, 1
+                                pos_hint: {"center_x": .5}
+                                on_release: root.sair_conta_app()
+
+                        MDCard:
+                            orientation: "vertical"
+                            padding: dp(16)
+                            spacing: dp(10)
+                            size_hint_y: None
+                            height: self.minimum_height
+                            radius: [dp(18)]
+                            md_bg_color: 0.10, 0.12, 0.17, .96
+                            MDBoxLayout:
+                                orientation: "horizontal"
+                                size_hint_y: None
+                                height: dp(28)
+                                spacing: dp(6)
+                                MDIcon:
+                                    icon: "link-variant"
+                                    font_size: dp(22)
+                                    theme_text_color: "Custom"
+                                    text_color: 0.30, 0.80, 0.85, 1
+                                    size_hint: None, None
+                                    size: dp(24), dp(24)
+                                    pos_hint: {"center_y": .5}
+                                MDLabel:
+                                    markup: True
+                                    text: "[b]Conexao IMVU (opcional)[/b]"
+                                    size_hint_y: None
+                                    height: self.texture_size[1]
+                                    text_size: self.width, None
+                            MDLabel:
+                                markup: True
+                                text: "Mostra presenca, sala e foto em tempo real. A senha vai somente para o IMVU; nada fica salvo no aparelho."
+                                font_style: "Caption"
+                                theme_text_color: "Custom"
+                                text_color: 0.60, 0.66, 0.72, 1
+                                size_hint_y: None
+                                height: self.texture_size[1]
+                                text_size: self.width, None
+                            MDTextField:
+                                id: login_user
+                                hint_text: "usuario IMVU"
+                                mode: "rectangle"
+                            MDTextField:
+                                id: login_pass
+                                hint_text: "senha"
+                                password: True
+                                mode: "rectangle"
+                            MDTextField:
+                                id: login_code
+                                hint_text: "codigo 2FA (so se o IMVU pedir)"
+                                mode: "rectangle"
+                            MDBoxLayout:
+                                orientation: "horizontal"
+                                size_hint_y: None
+                                height: dp(48)
+                                spacing: dp(8)
+                                MDRaisedButton:
+                                    text: "ENTRAR"
+                                    on_release: root.fazer_login()
+                                MDFlatButton:
+                                    text: "SAIR"
+                                    on_release: root.sair_conta()
                             MDLabel:
                                 id: conta_result
                                 markup: True
@@ -1046,6 +1335,41 @@ class LoginScreen(MDScreen):
         else:
             self._aviso(_fb_err(erro), VERMELHO)
 
+    def entrar_google(self):
+        if not self._ligada():
+            self._aviso("O login ainda nao foi ativado pelo dono do app.")
+            return
+        if not _google_ligado():
+            self._aviso("A entrada com Google sera ligada em breve; "
+                        "por enquanto use o email e a senha.")
+            return
+        if self._ocupado:
+            return
+        self._ocupado = True
+        self.ids.login_spinner.active = True
+        self._aviso("abrindo o Google no navegador... faca o login e volte para o app", VERDE)
+        threading.Thread(target=self._t_google, daemon=True).start()
+
+    def _t_google(self):
+        dados, erro = google_login_flow()
+        if dados:
+            conta_salvar(dados)
+        Clock.schedule_once(lambda dt: self._mostrar_google(dados, erro), 0)
+
+    def _mostrar_google(self, dados, erro):
+        self._ocupado = False
+        self.ids.login_spinner.active = False
+        if dados:
+            try:
+                MDApp.get_running_app().ir_principal()
+            except Exception:
+                pass
+            return
+        if erro == "NAO_ABRIU_NAVEGADOR":
+            self._aviso("nao consegui abrir o navegador neste aparelho", VERMELHO)
+        else:
+            self._aviso(_limpa(erro), VERMELHO)
+
 
 class MainScreen(MDScreen):
     def __init__(self, **kwargs):
@@ -1056,6 +1380,8 @@ class MainScreen(MDScreen):
         self._update_url = None
         self._manual_update = False
         self._presente_ocupado = False
+        self._email_completo = ""
+        self._email_visivel = False
 
     def on_enter(self, *args):
         self._atualizar_conta_app()
@@ -1065,14 +1391,29 @@ class MainScreen(MDScreen):
             dados = conta_carregar()
         except Exception:
             dados = {}
-        if dados.get("email"):
+        self._email_completo = dados.get("email") or ""
+        self._email_visivel = False
+        if self._email_completo:
             if dados.get("verificado"):
-                selo = f"[color={VERDE}]confirmado[/color]"
+                self.ids.conta_status.text = f"[color={VERDE}]conta confirmada[/color]"
             else:
-                selo = f"[color={AMARELO}]confirme o email (veja sua caixa de entrada)[/color]"
-            self.ids.conta_app.text = f"Conta do app: [b]{_limpa(dados['email'])}[/b] - {selo}"
+                self.ids.conta_status.text = (
+                    f"[color={AMARELO}]falta confirmar o email - veja a caixa de entrada e o spam[/color]"
+                )
         else:
-            self.ids.conta_app.text = "Sem conta do app: o resgate fica bloqueado."
+            self.ids.conta_status.text = (
+                f"[color={AMARELO}]sem conta - o resgate fica bloqueado[/color]"
+            )
+        self.ids.conta_email.text = _email_mascarado(self._email_completo) or "sem email cadastrado"
+        self.ids.btn_ver_email.icon = "eye"
+
+    def alternar_email(self):
+        email = getattr(self, "_email_completo", "")
+        if not email:
+            return
+        self._email_visivel = not getattr(self, "_email_visivel", False)
+        self.ids.conta_email.text = email if self._email_visivel else _email_mascarado(email)
+        self.ids.btn_ver_email.icon = "eye-off" if self._email_visivel else "eye"
 
     def sair_conta_app(self):
         conta_limpar()

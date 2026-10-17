@@ -10,7 +10,7 @@ services:
       - key: ADMIN_TOKEN
         sync: false
       - key: FIREBASE_KEY
-        sync: false
+        value: "AIzaSyAsKQrTAhV5FqvnzZ69QUdG5j4qExZ6ijQ"
       - key: EXIGIR_LOGIN
         value: "1"
       - key: PRESENTE_CREDITOS

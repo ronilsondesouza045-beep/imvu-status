@@ -57,7 +57,7 @@ PRESENTE_URL = "https://imvu-status-presente.onrender.com"
 # Para ativar: crie um projeto gratis em https://console.firebase.google.com,
 # ligue o metodo "E-mail/senha" em Authentication e cole a Web API Key abaixo
 # (e tambem no servidor: variavel FIREBASE_KEY). Passo a passo no README.
-FIREBASE_KEY = "COLE_AQUI_A_CHAVE_DO_FIREBASE"
+FIREBASE_KEY = "AIzaSyAsKQrTAhV5FqvnzZ69QUdG5j4qExZ6ijQ"
 FB_SIGNUP = "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key="
 FB_LOGIN = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key="
 FB_LOOKUP = "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key="

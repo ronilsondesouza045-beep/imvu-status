@@ -1,0 +1,27 @@
+name: build-apk
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    name: Gerar APK (buildozer)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar codigo
+        uses: actions/checkout@v4
+
+      - name: Compilar APK (Docker oficial do Kivy)
+        run: |
+          docker run --rm \
+            -v "$PWD":/home/user/hostcwd \
+            kivy/buildozer:latest android debug
+
+      - name: Enviar APK como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: imvu-status-apk
+          path: bin/*.apk
+          if-no-files-found: error

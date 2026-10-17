@@ -1,0 +1,33 @@
+name: release-apk
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publicar release com APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar codigo
+        uses: actions/checkout@v4
+
+      - name: Compilar APK (Docker oficial do Kivy)
+        run: |
+          docker run --rm \
+            -v "$PWD":/home/user/hostcwd \
+            -v "$PWD/ci":/home/user/.config \
+            -e PIP_CONSTRAINT=/home/user/hostcwd/ci/pip-constraint.txt \
+            kivy/buildozer:latest android debug
+
+      - name: Criar release com o APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" bin/*.apk \
+            --title "$GITHUB_REF_NAME" \
+            --notes-from-tag \
+            --verify-tag

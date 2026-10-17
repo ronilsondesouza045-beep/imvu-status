@@ -11,8 +11,10 @@ Não faz varredura de pessoas nem fura localização desativada: mostra apenas o
 - Sala atual, com indicação de **pública** ou **privada** (quando o IMVU expõe)
 - Detecção de possível modo "aparecer offline" (o perfil ainda aponta a última sala)
 - Diretório público de salas + dono, lotação e participantes de cada sala
+- **Card do avatar**: imagem do avatar (renderização oficial ou foto de perfil), seguidores e o look atual
 - Monitoramento a cada X segundos
 - Login opcional na sua conta (aumenta o que aparece)
+- **Aba APP**: verifica se há versão nova, mostra o que mudou e botão para baixar o APK
 
 ## Estrutura
 
@@ -32,7 +34,9 @@ python cli/imvu_status.py
 
 ## Como pegar o APK
 
-O APK é compilado automaticamente pelo GitHub Actions a cada push:
+**Versões publicadas (recomendado):** aba **Releases** do repositório — o APK fica anexado na versão mais recente.
+
+**Builds de desenvolvimento:** o APK é compilado automaticamente pelo GitHub Actions a cada push:
 
 1. Abra a aba **Actions** do repositório
 2. Entre no workflow **build-apk** → último run
@@ -46,6 +50,21 @@ Quer compilar local? Precisa de Docker:
 ```
 docker run --rm -v "$PWD":/home/user/hostcwd kivy/buildozer:latest android debug
 ```
+
+## Como publicar uma atualização (dono do repositorio)
+
+1. Edite o app normalmente (correcoes/melhorias)
+2. Atualize a versao nos dois lugares (precisam ser iguais):
+   - `main.py` → `APP_VERSAO = "x.y.z"`
+   - `buildozer.spec` → `version = x.y.z`
+3. Commit e push na `main` (isso valida o build no workflow build-apk)
+4. Crie a tag anotada com o changelog (o texto vira as "notas" que o app mostra):
+   ```
+   git tag -a v1.2.0 -m "Corrigido: ..." -m "Novo: ..."
+   git push origin v1.2.0
+   ```
+5. O workflow **release-apk** compila e cria a Release com o APK anexado
+6. Quem tem o app instalado ve a atualizacao na aba **APP** (verifica sozinho ao abrir, ou no botao) com o changelog e o botao de download
 
 ## Limitações (importante)
 

@@ -19,6 +19,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import datetime
+import hashlib
+import os
+import webbrowser
 
 from kivy.clock import Clock
 from kivy.lang import Builder
@@ -38,6 +41,10 @@ from kivymd.uix.boxlayout import MDBoxLayout  # noqa: F401
 API = "https://api.imvu.com"
 UA = ("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
+
+APP_VERSAO = "1.1.0"
+REPO_GH = "ronilsondesouza045-beep/imvu-status"
+RELEASES_API = f"https://api.github.com/repos/{REPO_GH}/releases/latest"
 
 try:
     import certifi
@@ -63,6 +70,11 @@ def _data_epoch(seg):
         return datetime.datetime.fromtimestamp(int(seg), tz=datetime.timezone.utc).strftime("%Y-%m-%d")
     except Exception:
         return "?"
+
+
+def _versao_tupla(txt):
+    partes = re.findall(r"\d+", str(txt or ""))
+    return tuple(int(p) for p in partes[:4]) or (0,)
 
 
 class ClienteIMVU:
@@ -107,6 +119,17 @@ class ClienteIMVU:
         if isinstance(js, dict) and js.get("status") == "failure":
             raise ErroAPI(f"{js.get('error', '?')}: {js.get('message', '?')}")
         return js
+
+    def baixar_imagem(self, url):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            with self.opener.open(req, timeout=25) as resp:
+                dados = resp.read()
+        except Exception:
+            return None
+        if dados and (dados[:4] == b"\x89PNG" or dados[:3] == b"\xff\xd8\xff"):
+            return dados
+        return None
 
     def resolver_nick(self, nick):
         url = f"{API}/user?" + urllib.parse.urlencode({"username": nick})
@@ -154,6 +177,38 @@ class ClienteIMVU:
                 resultado["sala"] = rnode.get("data", {})
             except ErroAPI:
                 resultado["sala"] = {}
+        perfil = {}
+        try:
+            if "profile" in u["rel"]:
+                pjs = self._req(u["rel"]["profile"])
+                pnode = (pjs.get("denormalized") or {}).get(u["rel"]["profile"]) or {}
+                perfil = pnode.get("data", {})
+        except ErroAPI:
+            pass
+        look = None
+        try:
+            if "profile_outfit" in u["rel"]:
+                ojs = self._req(u["rel"]["profile_outfit"])
+                onode = (ojs.get("denormalized") or {}).get(u["rel"]["profile_outfit"]) or {}
+                odata = onode.get("data", {})
+                prods = [p.get("product_id") for p in (odata.get("products") or [])
+                         if isinstance(p, dict) and p.get("product_id")]
+                if prods:
+                    look = {"total": len(prods), "corpo": None}
+                    purl = f"{API}/product/product-{prods[0]}"
+                    try:
+                        prjs = self._req(purl)
+                        prnode = (prjs.get("denormalized") or {}).get(purl) or {}
+                        look["corpo"] = (prnode.get("data") or {}).get("product_name")
+                    except ErroAPI:
+                        pass
+        except ErroAPI:
+            pass
+        resultado["perfil"] = perfil
+        resultado["look"] = look
+        resultado["imagem_3d"] = u["data"].get("avatar_image")
+        resultado["retrato_3d"] = u["data"].get("avatar_portrait_image")
+        resultado["foto_perfil"] = perfil.get("image") or u["data"].get("thumbnail_url")
         return resultado
 
     def buscar_sala(self, room_id):
@@ -256,6 +311,13 @@ def fmt_checagem(res):
     elif res["online"]:
         linhas.append("Sala atual: nao exposta agora")
     linhas.append(f"Pais: {_limpa(d.get('country') or '?')} | Membro desde {_data_epoch(d.get('registered'))}")
+    perfil = res.get("perfil") or {}
+    if perfil.get("approx_follower_count") is not None:
+        linhas.append(f"Seguidores: ~{perfil.get('approx_follower_count')}")
+    look = res.get("look")
+    if look:
+        corpo = _limpa(look.get("corpo")) if look.get("corpo") else "look atual"
+        linhas.append(f"Avatar/look: {corpo} ({look.get('total')} itens)")
     marcas = []
     if d.get("is_vip"):
         marcas.append("VIP")
@@ -340,6 +402,12 @@ KV = """
                             size_hint_y: None
                             height: self.minimum_height
                             radius: [dp(14)]
+                            Image:
+                                id: foto_avatar
+                                size_hint_y: None
+                                height: 0
+                                opacity: 0
+                                fit_mode: "contain"
                             MDSpinner:
                                 id: spinner
                                 size_hint: None, None
@@ -446,6 +514,56 @@ KV = """
                                 size_hint_y: None
                                 height: self.texture_size[1]
                                 text_size: self.width, None
+
+            MDBottomNavigationItem:
+                name: "tab_app"
+                text: "APP"
+                icon: "update"
+                ScrollView:
+                    do_scroll_x: False
+                    MDBoxLayout:
+                        orientation: "vertical"
+                        size_hint_y: None
+                        height: self.minimum_height
+                        padding: dp(16)
+                        spacing: dp(12)
+                        MDLabel:
+                            id: app_versao
+                            markup: True
+                            text: "Versao instalada: ?"
+                            size_hint_y: None
+                            height: self.texture_size[1]
+                            text_size: self.width, None
+                        MDRaisedButton:
+                            text: "VERIFICAR ATUALIZACAO"
+                            on_release: root.verificar_update(True)
+                        MDCard:
+                            orientation: "vertical"
+                            padding: dp(14)
+                            spacing: dp(8)
+                            size_hint_y: None
+                            height: self.minimum_height
+                            radius: [dp(14)]
+                            MDLabel:
+                                id: update_titulo
+                                markup: True
+                                text: "Toque em VERIFICAR ATUALIZACAO para ver se ha versao nova."
+                                size_hint_y: None
+                                height: self.texture_size[1]
+                                text_size: self.width, None
+                            MDLabel:
+                                id: update_notas
+                                markup: False
+                                text: ""
+                                size_hint_y: None
+                                height: self.texture_size[1]
+                                text_size: self.width, None
+                            MDRaisedButton:
+                                id: btn_baixar
+                                text: "BAIXAR ATUALIZACAO"
+                                opacity: 0
+                                disabled: True
+                                on_release: root.abrir_download()
 """
 
 
@@ -455,6 +573,8 @@ class MainScreen(MDScreen):
         self.cliente = ClienteIMVU()
         self._monitor_event = None
         self._ocupado = False
+        self._update_url = None
+        self._manual_update = False
 
     def checar_nick(self):
         nick = (self.ids.nick_field.text or "").strip()
@@ -474,11 +594,60 @@ class MainScreen(MDScreen):
             erro = None
         except Exception as e:
             res, erro = None, str(e)
+        if res:
+            res["img_local"] = self._obter_imagem(res)
         Clock.schedule_once(lambda dt: self._mostrar_checagem(res, erro), 0)
+
+    def _obter_imagem(self, res):
+        candidatos = []
+        if self.cliente.logado:
+            if res.get("imagem_3d"):
+                candidatos.append(res["imagem_3d"])
+            if res.get("retrato_3d"):
+                candidatos.append(res["retrato_3d"])
+        if res.get("foto_perfil"):
+            candidatos.append(res["foto_perfil"])
+        base = None
+        try:
+            base = MDApp.get_running_app().user_data_dir
+        except Exception:
+            base = None
+        for url in candidatos:
+            dados = self.cliente.baixar_imagem(url)
+            if not dados:
+                continue
+            if not base:
+                return None
+            nome = "avatar_%s_%s.png" % (res.get("cid", "x"),
+                                         hashlib.md5(url.encode("utf-8")).hexdigest()[:10])
+            caminho = os.path.join(base, nome)
+            try:
+                with open(caminho, "wb") as f:
+                    f.write(dados)
+                return caminho
+            except Exception:
+                continue
+        return None
+
+    def _mostrar_imagem(self, caminho):
+        img = self.ids.foto_avatar
+        if caminho:
+            img.source = caminho
+            img.height = dp(220)
+            img.opacity = 1
+            try:
+                img.reload()
+            except Exception:
+                pass
+        else:
+            img.source = ""
+            img.height = 0
+            img.opacity = 0
 
     def _mostrar_checagem(self, res, erro):
         self._ocupado = False
         self.ids.spinner.active = False
+        self._mostrar_imagem(res.get("img_local") if res else None)
         if erro:
             self.ids.resultado.text = f"[color={VERMELHO}]Erro: {_limpa(erro)}[/color]"
         elif res is None:
@@ -559,6 +728,73 @@ class MainScreen(MDScreen):
         self.cliente = ClienteIMVU()
         self.ids.conta_result.text = "sessao: anonimo"
 
+    def verificar_update(self, manual=False):
+        self._manual_update = bool(manual)
+        self.ids.update_titulo.text = "Verificando..."
+        self.ids.update_notas.text = ""
+        threading.Thread(target=self._t_update, daemon=True).start()
+
+    def _t_update(self):
+        try:
+            req = urllib.request.Request(
+                RELEASES_API,
+                headers={"User-Agent": UA, "Accept": "application/vnd.github+json"},
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                js = json.loads(resp.read().decode("utf-8", errors="replace"))
+            erro = None
+        except Exception as e:
+            js, erro = None, str(e)
+        Clock.schedule_once(lambda dt: self._mostrar_update(js, erro), 0)
+
+    def _mostrar_update(self, js, erro):
+        if erro or not isinstance(js, dict):
+            if self._manual_update:
+                self.ids.update_titulo.text = (
+                    f"[color={VERMELHO}]Nao foi possivel verificar agora: {_limpa(erro)}[/color]"
+                )
+            else:
+                self.ids.update_titulo.text = (
+                    "Toque em VERIFICAR ATUALIZACAO para ver se ha versao nova."
+                )
+            return
+        tag = str(js.get("tag_name") or "").strip() or f"v{APP_VERSAO}"
+        novo = _versao_tupla(tag) > _versao_tupla(APP_VERSAO)
+        self._update_url = None
+        for a in js.get("assets") or []:
+            u = str(a.get("browser_download_url") or "")
+            if u.lower().endswith(".apk"):
+                self._update_url = u
+        if novo:
+            self.ids.update_titulo.text = (
+                f"[color={AMARELO}][b]Atualizacao disponivel: {_limpa(tag)}[/b][/color]  "
+                f"(instalada: v{APP_VERSAO})"
+            )
+            self.ids.update_notas.text = (js.get("body") or "").strip() or "Sem notas nesta versao."
+            self.ids.btn_baixar.opacity = 1
+            self.ids.btn_baixar.disabled = not bool(self._update_url)
+        else:
+            self.ids.update_titulo.text = (
+                f"[color={VERDE}]Voce esta na versao mais recente (v{APP_VERSAO}).[/color]"
+            )
+            self.ids.update_notas.text = ""
+            self.ids.btn_baixar.opacity = 0
+            self.ids.btn_baixar.disabled = True
+
+    def abrir_download(self):
+        if not self._update_url:
+            return
+        try:
+            from android import open_url
+            open_url(self._update_url)
+            return
+        except Exception:
+            pass
+        try:
+            webbrowser.open(self._update_url)
+        except Exception:
+            self.ids.update_notas.text = self._update_url
+
 
 class IMVUStatusApp(MDApp):
     def build(self):
@@ -575,6 +811,11 @@ class IMVUStatusApp(MDApp):
             Window.softinput_mode = "below_target"
         except Exception:
             pass
+        try:
+            self.root.ids.app_versao.text = f"Versao instalada: [b]v{APP_VERSAO}[/b]"
+        except Exception:
+            pass
+        Clock.schedule_once(lambda dt: self.root.verificar_update(False), 3)
 
 
 if __name__ == "__main__":

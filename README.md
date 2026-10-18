@@ -44,10 +44,11 @@ descompila e rouba a conta.
    dê **duplo clique em `configurar_presente.bat`** (precisa do
    [Python](https://www.python.org/downloads/) instalado; marque "Add Python to PATH").
    - Se você usa o **Firefox** logado no IMVU, ele puxa a sessão sozinho — **nem digita senha**.
-   - Senão, digite o nick, a senha (não aparece na tela) e o código 2FA se o IMVU pedir.
-   - Por que não puxa do **Chrome**? O Chrome 127+ criptografa os cookies com
-     App-Bound Encryption (proteção anti-roubo); só daria com técnicas de invasão
-     que antivírus bloqueiam — por isso usamos Firefox ou digitação única.
+   - Senão, escolha **1** para colar o valor do cookie `osCsid` (funciona no **Chrome**,
+     Edge, qualquer navegador — o próprio assistente mostra o passo a passo do F12)
+     ou **2** para digitar o nick, a senha (não aparece na tela) e o código 2FA se o IMVU pedir.
+   - Por que não puxa do **Chrome** sozinho? O Chrome 127+ criptografa os cookies com
+     App-Bound Encryption (proteção anti-roubo) — por isso a cópia manual ou o Firefox.
 
    No fim ele salva a sessão e mostra o arquivo
    `server\dados\sessao_env.txt` — é o texto que você vai colar no Render.
@@ -162,6 +163,11 @@ muito tempo sem uso** — igual ao site, que desloga sozinho. O servidor agora:
 
 Detalhe importante: abrir o IMVU Desktop/Firefox na sua máquina **não** renova a
 sessão do servidor — o servidor tem a própria sessão, separada.
+
+**Não deixe servidor de teste aberto no seu PC**: se rodar `server/app.py` aqui
+para testar, feche depois (Ctrl+C ou feche a janela). Rodando escondido, ele tenta
+renovar uma sessão velha direto do seu IP e o IMVU pode derrubar a sessão de
+segurança.
 
 No plano grátis o Render **dorme após ~15 min sem visitas** e aí o keep-alive
 também para. Para funcionar 24h, crie um monitor grátis (ex.:

@@ -859,6 +859,12 @@ class SessaoIMVU:
                 ok = self.validar()
             if ok:
                 self.salvar_sessao()
+                try:
+                    # visita o site como um navegador faria; ajuda a renovar
+                    # a sessao da web (so /login/me pode nao bastar)
+                    self._req("https://www.imvu.com/")
+                except Exception:
+                    pass
                 return True
         except Exception as e:
             self.ultimo_erro = f"falha de rede: {e}"

@@ -315,7 +315,8 @@ def google_login_flow():
             pass
     if resultado.get("error"):
         if resultado["error"] == "access_denied":
-            return None, "login cancelado (ou bloqueado pelo Google; tente de novo)"
+            return None, ("login cancelado, ou bloqueado pelo Google. "
+                          "Se nao foi voce, avise o dono do app")
         return None, str(resultado["error"])
     code = resultado.get("code") or ""
     if not code:

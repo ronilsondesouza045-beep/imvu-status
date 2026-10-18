@@ -75,7 +75,9 @@ curl -X POST https://SEU-BACKEND.onrender.com/admin/2fa -H "X-Admin-Token: SEU_T
 
 Outras variáveis (têm padrão): `PRESENTE_CREDITOS` (100), `GIFT_JANELA_HORAS` (24),
 `GIFT_IDADE_MINIMA_DIAS` (7), `GIFT_LIMITE_IP_AVATARES` (3), `GIFT_LIMITE_DIARIO` (10),
-`GIFT_MENSAGEM`. Confira tudo em `GET /admin/status` (com o header `X-Admin-Token`).
+`KEEPALIVE_MINUTOS` (5 — o servidor "acorda" a sessão do IMVU de tempos em tempos
+pra ela não expirar por inatividade; `0` desliga), `GIFT_MENSAGEM`. Confira tudo em
+`GET /admin/status` (com o header `X-Admin-Token`).
 
 ### Login do app (conta por email — Firebase)
 
@@ -145,6 +147,42 @@ Como obter (uma vez só, grátis):
   Use `GIFT_LIMITE_DIARIO` baixo e acompanhe o `/admin/status`.
 - Nunca suba a pasta `server/dados/` (já está no `.gitignore`): ela contém a sessão da sua conta.
 - A senha **nunca** é salva: nem no seu PC, nem no servidor, nem no GitHub.
+
+## Problemas comuns
+
+### Diz "Pode resgatar" (ou "presente disponível") mas as pessoas não conseguem receber
+
+A sessão do IMVU (a que o `configurar_presente.bat` capturou) **expira quando fica
+muito tempo sem uso** — igual ao site, que desloga sozinho. O servidor agora:
+
+- **mantém a sessão viva sozinho** (`KEEPALIVE_MINUTOS`, padrão 5 minutos);
+- **não sobrescreve** mais a sessão salva com a cópia antiga da `IMVU_SESSAO` a cada
+  reinício (a variável só é aplicada se mudou ou se não havia sessão nenhuma);
+- **só mostra "pode resgatar" quando a sessão do servidor foi validada de verdade**.
+
+Detalhe importante: abrir o IMVU Desktop/Firefox na sua máquina **não** renova a
+sessão do servidor — o servidor tem a própria sessão, separada.
+
+No plano grátis o Render **dorme após ~15 min sem visitas** e aí o keep-alive
+também para. Para funcionar 24h, crie um monitor grátis (ex.:
+[cron-job.org](https://cron-job.org) ou [UptimeRobot](https://uptimerobot.com))
+apontando para `https://SEU-BACKEND.onrender.com/health` **a cada 5 a 10 minutos**:
+isso mantém o serviço acordado e a sessão renovando.
+
+Se mesmo assim a sessão morrer, rode o `configurar_presente.bat` de novo, atualize
+a `IMVU_SESSAO` no Render (o servidor detecta o texto novo e recarrega sozinho) e
+olhe os logs do Render — o keep-alive avisa quando a sessão cai. Alternativa:
+configure `IMVU_USER` e `IMVU_PASS` no Render (veja "Jeito manual") para o servidor
+entrar de novo sozinho quando a sessão cair (se o IMVU pedir 2FA, use o `/admin/2fa`).
+
+### Login com Google: só a conta do dono consegue entrar
+
+O app OAuth do Google está **em modo de teste** — só as contas da lista de
+testadores entram (por isso criação de conta e login por email funcionam normal).
+Para liberar geral, abra
+[console.cloud.google.com/auth/audience](https://console.cloud.google.com/auth/audience)
+(no mesmo projeto do Firebase) → **Público-alvo** → **Publicar app**. É grátis e
+rápido: os escopos usados (`email`/`profile`) não exigem verificação do Google.
 
 ## Como usar a versão terminal
 

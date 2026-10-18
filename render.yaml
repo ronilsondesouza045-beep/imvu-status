@@ -23,3 +23,5 @@ services:
         value: "3"
       - key: GIFT_LIMITE_DIARIO
         value: "10"
+      - key: KEEPALIVE_MINUTOS
+        value: "5"

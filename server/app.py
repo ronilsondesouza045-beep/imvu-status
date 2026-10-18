@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-IMVU Status - backend do "presente gratis".
+IMVU Status - backend do site + do "presente gratis".
+
+Serve tambem a versao web (pasta web/) em "/", com as mesmas funcoes do app:
+consulta de nick (online/offline, sala, card do avatar), diretorio de salas,
+conta (Firebase) e resgate do presente.
 
 Fica logado com a conta do DONO (credenciais apenas em variaveis de ambiente
 do servidor; nada disso vai para o app/APK) e envia presentes usando os
@@ -28,6 +32,9 @@ Variaveis de ambiente:
   GIFT_LIMITE_IP_AVATARES avatares diferentes por IP na janela (padrao 3)
   GIFT_LIMITE_DIARIO      envios por dia no total (padrao 10)
   GIFT_MENSAGEM       mensagem padrao junto do presente (opcional)
+  KEEPALIVE_MINUTOS   de quantos em quantos minutos o servidor "acorda" a
+                      sessao do IMVU para ela nao expirar por inatividade
+                      (padrao 5; 0 desliga)
   FIREBASE_KEY        Web API Key do projeto Firebase (login por email no app).
                       Sem ela, o login nao e exigido (modo antigo).
   EXIGIR_LOGIN        "1" (padrao) exige conta logada com email confirmado;
@@ -39,10 +46,13 @@ Variaveis de ambiente:
 NUNCA escreva credenciais no codigo nem suba a pasta de dados para o GitHub.
 """
 
+import ast
 import base64
 import datetime
+import hashlib
 import http.cookiejar
 import json
+import mimetypes
 import os
 import re
 import sqlite3
@@ -58,9 +68,15 @@ API = "https://api.imvu.com"
 UA = ("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
 
+WEB_VERSAO = "2.0.0"
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RAIZ_DIR = os.path.dirname(BASE_DIR)
+WEB_DIR = os.path.join(RAIZ_DIR, "web")
+ASSETS_DIR = os.path.join(RAIZ_DIR, "assets")
 DATA_DIR = os.environ.get("DATA_DIR") or os.path.join(BASE_DIR, "dados")
 SESSION_FILE = os.path.join(DATA_DIR, "session.json")
+ENV_HASH_FILE = os.path.join(DATA_DIR, "sessao_env.hash")
 DB_FILE = os.path.join(DATA_DIR, "gifts.db")
 
 IMVU_USER = (os.environ.get("IMVU_USER") or "").strip()
@@ -71,6 +87,7 @@ GIFT_IDADE_MINIMA_DIAS = max(0, int(os.environ.get("GIFT_IDADE_MINIMA_DIAS") or 
 GIFT_LIMITE_IP_AVATARES = max(1, int(os.environ.get("GIFT_LIMITE_IP_AVATARES") or 3))
 GIFT_LIMITE_DIARIO = max(1, int(os.environ.get("GIFT_LIMITE_DIARIO") or 10))
 GIFT_MENSAGEM = (os.environ.get("GIFT_MENSAGEM") or "").strip()
+KEEPALIVE_MINUTOS = max(0, int(os.environ.get("KEEPALIVE_MINUTOS") or 5))
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN") or ""
 FIREBASE_KEY = (os.environ.get("FIREBASE_KEY") or "").strip()
 EXIGIR_LOGIN = (os.environ.get("EXIGIR_LOGIN", "1") or "1").strip().lower() not in ("0", "false", "no")
@@ -368,10 +385,21 @@ def materializar_sessao_env():
     except Exception:
         _log("AVISO: IMVU_SESSAO invalido; ignorando")
         return False
+    marca = hashlib.sha256(valor.encode("utf-8")).hexdigest()
+    try:
+        with open(ENV_HASH_FILE, "r", encoding="utf-8") as f:
+            marca_anterior = (f.read() or "").strip()
+    except Exception:
+        marca_anterior = ""
+    if marca_anterior == marca and os.path.exists(SESSION_FILE):
+        _log("IMVU_SESSAO sem mudanca; mantendo a sessao mais nova salva no servidor")
+        return False
     try:
         criar_pastas()
         with open(SESSION_FILE, "w", encoding="utf-8") as f:
             json.dump(dados, f)
+        with open(ENV_HASH_FILE, "w", encoding="utf-8") as f:
+            f.write(marca)
         try:
             os.chmod(SESSION_FILE, 0o600)
         except Exception:
@@ -407,6 +435,243 @@ def rate_ok(ip, maximo=20, janela=60):
     return True
 
 
+# ---------------------------------------------------------------------------
+# Consulta publica (site): fala com o IMVU SEM a conta do dono (sessao anonima,
+# sem cookies) para nao gastar/bloquear a conta que paga os presentes.
+# ---------------------------------------------------------------------------
+
+_CACHE_PUB = {}
+_CACHE_PUB_LOCK = threading.Lock()
+_CACHE_PUB_TTL = 15
+
+
+def _cache_pegar(chave):
+    agora = time.time()
+    with _CACHE_PUB_LOCK:
+        item = _CACHE_PUB.get(chave)
+        if item and item[0] > agora:
+            return item[1]
+        if item:
+            _CACHE_PUB.pop(chave, None)
+    return None
+
+
+def _cache_guardar(chave, valor):
+    with _CACHE_PUB_LOCK:
+        _CACHE_PUB[chave] = (time.time() + _CACHE_PUB_TTL, valor)
+        if len(_CACHE_PUB) > 800:
+            agora = time.time()
+            for k in list(_CACHE_PUB):
+                if _CACHE_PUB[k][0] < agora:
+                    _CACHE_PUB.pop(k, None)
+
+
+def _req_publico(url, metodo="GET", corpo=None, texto_puro=False):
+    headers = {"User-Agent": UA, "Accept": "application/json, text/plain, */*"}
+    dados = None
+    if corpo is not None:
+        dados = json.dumps(corpo).encode("utf-8")
+        headers["Content-Type"] = "application/json; charset=utf-8"
+    req = urllib.request.Request(url, data=dados, headers=headers, method=metodo)
+    try:
+        with urllib.request.urlopen(req, timeout=25, context=_SSL_CTX) as resp:
+            texto = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        try:
+            texto = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            raise ErroAPI(f"HTTP {e.code}")
+    except Exception as e:
+        raise ErroAPI(f"falha de rede: {e}")
+    if "too many requests" in texto.lower():
+        raise ErroAPI("IMVU bloqueou temporariamente (muitas requisicoes).")
+    if texto_puro:
+        return texto
+    try:
+        js = json.loads(texto)
+    except Exception:
+        raise ErroAPI("resposta inesperada do IMVU")
+    if isinstance(js, dict) and js.get("status") == "failure":
+        raise ErroAPI(f"{js.get('error', '?')}: {js.get('message', '?')}")
+    return js
+
+
+def _resolver_nick_publico(nick):
+    url = f"{API}/user?" + urllib.parse.urlencode({"username": nick})
+    js = _req_publico(url)
+    raiz = js.get("denormalized", {})
+    colecao = raiz.get(js.get("id"), {})
+    itens = (colecao.get("data") or {}).get("items") or []
+    if not itens:
+        return None
+    node_url = itens[0]
+    node = raiz.get(node_url, {})
+    m = re.search(r"user-(\d+)$", node_url)
+    return {
+        "cid": m.group(1) if m else "?",
+        "data": node.get("data", {}),
+        "rel": node.get("relations", {}),
+    }
+
+
+def _checar_publico(nick):
+    u = _resolver_nick_publico(nick)
+    if not u:
+        return None
+    d = u["data"]
+    presenca = {}
+    try:
+        purl = u["rel"].get("presence") or f"{API}/presence/presence-{u['cid']}"
+        pjs = _req_publico(purl)
+        pnode = (pjs.get("denormalized") or {}).get(purl) or {}
+        presenca = pnode.get("data", {})
+    except ErroAPI:
+        pass
+    online = bool(presenca.get("online", d.get("online", False)))
+    sala = None
+    if "current_room" in u["rel"]:
+        try:
+            rjs = _req_publico(u["rel"]["current_room"])
+            rnode = (rjs.get("denormalized") or {}).get(u["rel"]["current_room"]) or {}
+            dados_sala = rnode.get("data") or {}
+            if dados_sala:
+                sala = {
+                    "nome": str(dados_sala.get("name") or "?"),
+                    "privacidade": str(dados_sala.get("privacy") or "?").lower(),
+                }
+        except ErroAPI:
+            sala = None
+    perfil = {}
+    try:
+        if "profile" in u["rel"]:
+            pjs = _req_publico(u["rel"]["profile"])
+            pnode = (pjs.get("denormalized") or {}).get(u["rel"]["profile"]) or {}
+            perfil = pnode.get("data", {})
+    except ErroAPI:
+        pass
+    look = None
+    try:
+        if "profile_outfit" in u["rel"]:
+            ojs = _req_publico(u["rel"]["profile_outfit"])
+            onode = (ojs.get("denormalized") or {}).get(u["rel"]["profile_outfit"]) or {}
+            odata = onode.get("data", {})
+            prods = [p.get("product_id") for p in (odata.get("products") or [])
+                     if isinstance(p, dict) and p.get("product_id")]
+            if prods:
+                look = {"total": len(prods), "corpo": None}
+                purl = f"{API}/product/product-{prods[0]}"
+                try:
+                    prjs = _req_publico(purl)
+                    prnode = (prjs.get("denormalized") or {}).get(purl) or {}
+                    look["corpo"] = (prnode.get("data") or {}).get("product_name")
+                except ErroAPI:
+                    pass
+    except ErroAPI:
+        pass
+    marcas = []
+    if d.get("is_vip"):
+        marcas.append("VIP")
+    if d.get("is_ap") or d.get("is_ap_plus"):
+        marcas.append("AccessPass")
+    if d.get("is_creator"):
+        marcas.append("Criador")
+    foto = perfil.get("image") or d.get("thumbnail_url") or None
+    if foto and not str(foto).startswith(("http://", "https://")):
+        foto = None
+    return {
+        "nick": d.get("username") or nick,
+        "display_name": d.get("display_name") or d.get("username") or nick,
+        "cid": u["cid"],
+        "online": online,
+        "availability": (d.get("availability") or "").strip().lower(),
+        "sala": sala,
+        "pais": d.get("country") or "?",
+        "registrado": d.get("registered"),
+        "idade_dias": idade_conta_dias(d),
+        "seguidores": perfil.get("approx_follower_count"),
+        "look": look,
+        "foto_perfil": foto,
+        "marcas": marcas,
+        "tagline": (d.get("tagline") or "")[:140] or None,
+    }
+
+
+def checar_nick_publico(nick, ip):
+    nick = (nick or "").strip()
+    if not nick or len(nick) > 40:
+        return 400, {"erro": "digite um nick valido"}
+    if not rate_ok("pub:" + ip, maximo=60, janela=60):
+        return 429, {"erro": "muitas tentativas; espere um pouco"}
+    chave = nick.lower()
+    guardado = _cache_pegar(chave)
+    if guardado is not None:
+        if guardado is False:
+            return 404, {"erro": "nick nao encontrado no IMVU"}
+        return 200, guardado
+    try:
+        dados = _checar_publico(nick)
+    except ErroAPI as e:
+        if "too many requests" in str(e).lower():
+            return 429, {"erro": "muitas requisicoes; tente de novo em alguns minutos"}
+        return 502, {"erro": "IMVU nao respondeu; tente de novo"}
+    if not dados:
+        _cache_guardar(chave, False)
+        return 404, {"erro": "nick nao encontrado no IMVU"}
+    _cache_guardar(chave, dados)
+    return 200, dados
+
+
+def buscar_sala_publica(room_id):
+    m = re.search(r"(\d+-\d+)", room_id or "")
+    if not m:
+        raise ErroAPI("ID invalido (ex: 12345678-1)")
+    rid = m.group(1)
+    texto = _req_publico(
+        f"https://www.imvu.com/rooms/show-room-details.php?room_instance_id={rid}",
+        texto_puro=True,
+    )
+    mi = re.search(r"var roomInfo = (\{.*?\n\})\s*\n</script>", texto, re.S)
+    if not mi:
+        raise ErroAPI("sala nao encontrada (so salas publicas do diretorio)")
+    bloco = mi.group(1)
+    info = None
+    for tentativa in (
+        bloco,
+        re.sub(r"\btrue\b", "True", re.sub(r"\bfalse\b", "False",
+                 re.sub(r"\bnull\b", "None", bloco))),
+    ):
+        try:
+            info = ast.literal_eval(tentativa)
+            if isinstance(info, dict):
+                break
+        except Exception:
+            info = None
+    if not isinstance(info, dict):
+        info = {
+            "room_name": (re.search(r"'room_name'\s*:\s*'([^']*)'", bloco) or [None, "?"])[1],
+            "owner": (re.search(r"'owner'\s*:\s*'([^']*)'", bloco) or [None, "?"])[1],
+            "count": (re.search(r"'count'\s*:\s*'(\d+)'", bloco) or [None, "?"])[1],
+            "max": (re.search(r"'max'\s*:\s*'(\d+)'", bloco) or [None, "?"])[1],
+            "desc": "",
+            "participants": [],
+        }
+    participantes = []
+    for p in info.get("participants") or []:
+        if isinstance(p, dict):
+            participantes.append([str(p.get("name", "?")), str(p.get("size", "") or "")])
+        else:
+            participantes.append([str(p), ""])
+    return {
+        "id": rid,
+        "nome": str(info.get("room_name", "?")),
+        "owner": str(info.get("owner", "?")),
+        "count": str(info.get("count", "?")),
+        "max": str(info.get("max", "?")),
+        "desc": urllib.parse.unquote(str(info.get("desc") or ""))[:220],
+        "participantes": participantes,
+    }
+
+
 class SessaoIMVU:
     def __init__(self):
         self.cookies = http.cookiejar.CookieJar()
@@ -421,6 +686,7 @@ class SessaoIMVU:
         self.ultimo_erro = None
         self._lock = threading.Lock()
         self._checado_em = 0.0
+        self.valido_em = 0.0
 
     def _req(self, url, metodo="GET", corpo=None, com_sauce=False):
         headers = {"User-Agent": UA, "Accept": "application/json, text/plain, */*"}
@@ -525,13 +791,16 @@ class SessaoIMVU:
                     pass
             if not self.sauce:
                 self.ultimo_erro = "resposta do IMVU sem sauce"
+                self.estado = "sessao_expirada"
                 return False
             self.estado = "logado"
             self.ultimo_erro = None
             self._checado_em = time.time()
+            self.valido_em = self._checado_em
             return True
         except ErroAPI as e:
             self.ultimo_erro = str(e)
+            self.estado = "sessao_expirada"
             return False
 
     def login(self, codigo="", usuario=None, senha=None):
@@ -575,6 +844,30 @@ class SessaoIMVU:
                 self.salvar_sessao()
                 return True
             return self.login()
+
+    def manter_viva(self):
+        """Bate no IMVU de tempos em tempos para a sessao nao morrer de inatividade.
+
+        Sessao de site expira quando fica parada — e isso que derruba a conta
+        do servidor e faz o presente "sumir" do nada. Chamando /login/me
+        periodicamente a sessao segue valida (igual ao app oficial aberto).
+        """
+        if not self.sauce:
+            return self.garantir_login()
+        try:
+            with self._lock:
+                ok = self.validar()
+            if ok:
+                self.salvar_sessao()
+                return True
+        except Exception as e:
+            self.ultimo_erro = f"falha de rede: {e}"
+            self.estado = "sessao_expirada"
+        _log(f"keep-alive: sessao caiu ({self.ultimo_erro}); tentando entrar de novo")
+        try:
+            return self.garantir_login()
+        except Exception:
+            return False
 
     def resolver_nick(self, nick):
         url = f"{API}/user?" + urllib.parse.urlencode({"username": nick})
@@ -629,15 +922,33 @@ class SessaoIMVU:
 SESSAO = SessaoIMVU()
 
 
+STATUS_FRESCO_SEG = 15 * 60
+
+
 def status_publico():
     hoje = presentes_hoje()
     restantes = max(0, GIFT_LIMITE_DIARIO - hoje)
+    sessao_fresca = bool(SESSAO.valido_em) and (time.time() - SESSAO.valido_em) < STATUS_FRESCO_SEG
     return {
-        "disponivel": SESSAO.estado == "logado" or bool(SESSAO.sauce),
+        "disponivel": bool(SESSAO.estado == "logado" and sessao_fresca),
         "presentes_hoje": hoje,
         "restantes_hoje": restantes,
         "janela_horas": GIFT_JANELA_HORAS,
         "creditos_por_presente": GIFT_CREDITOS,
+    }
+
+
+def config_publica():
+    return {
+        "ok": True,
+        "servico": "IMVU Status",
+        "versao_site": WEB_VERSAO,
+        "firebase_key": FIREBASE_KEY,
+        "google_client_id": (os.environ.get("GOOGLE_CLIENT_ID") or "").strip(),
+        "login_exigido": bool(FIREBASE_KEY and EXIGIR_LOGIN),
+        "creditos": GIFT_CREDITOS,
+        "janela_horas": GIFT_JANELA_HORAS,
+        "repo_github": "ronilsondesouza045-beep/imvu-status",
     }
 
 
@@ -666,6 +977,9 @@ def pedir_presente(body, ip):
     if not SESSAO.garantir_login():
         if SESSAO.estado == "precisa_2fa":
             _log("AVISO: login pendente de 2FA; use POST /admin/2fa com o codigo")
+        else:
+            _log(f"AVISO: sem sessao do IMVU ({SESSAO.estado}: {SESSAO.ultimo_erro}) — "
+                 "rode o configurar_presente.bat e atualize a IMVU_SESSAO")
         return 503, {"erro": "presente indisponivel no momento (tente mais tarde)"}
 
     try:
@@ -772,14 +1086,18 @@ def checar_nick(nick, ip, token=None):
         return 404, {"erro": "nick nao encontrado no IMVU"}
     cid = destino["cid"]
     nick_ok = destino["data"].get("username") or nick
-    if SESSAO.sauce and SESSAO.garantir_login():
+    try:
+        sessao_ok = SESSAO.garantir_login()
+    except Exception:
+        sessao_ok = False
+    if sessao_ok:
         try:
             wl = SESSAO.wishlist(cid)
             wishlist = {"disponivel": True, "total": wl["total"], "itens": wl["itens"]}
         except ErroAPI:
             wishlist = {"disponivel": False, "motivo": "o IMVU nao deixou ver a wishlist agora"}
     else:
-        wishlist = {"disponivel": False, "motivo": "servidor ainda sem sessao logada"}
+        wishlist = {"disponivel": False, "motivo": "servidor sem sessao logada no momento"}
     ultimo = ja_recebeu_janela(cid)
     dias = idade_conta_dias(destino["data"])
     apto = True
@@ -807,6 +1125,10 @@ def checar_nick(nick, ip, token=None):
             if dono and dono.get("uid") != conta["uid"]:
                 apto = False
                 motivo = "esse avatar ja esta ligado a outra conta"
+    if apto and not sessao_ok:
+        apto = False
+        motivo = ("o presente esta pausado no momento (servidor reconectando); "
+                  "tente de novo em alguns minutos")
     return 200, {
         "nick": nick_ok,
         "cid": cid,
@@ -816,6 +1138,7 @@ def checar_nick(nick, ip, token=None):
         "apto": apto,
         "motivo": motivo,
         "login_exigido": bool(FIREBASE_KEY and EXIGIR_LOGIN),
+        "servidor_ok": sessao_ok,
         "conta": ({"email": conta["email"], "verificado": bool(conta["verificado"])}
                   if conta else None),
         "creditos": GIFT_CREDITOS,
@@ -853,6 +1176,33 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def _servir_arquivo(self, diretorio, relativo, cache="no-store"):
+        partes = [p for p in str(relativo).replace("\\", "/").split("/")
+                  if p and p not in (".", "..")]
+        caminho = os.path.join(diretorio, *partes)
+        if not os.path.isfile(caminho):
+            self._responder(404, {"erro": "arquivo nao encontrado"})
+            return
+        tipo = mimetypes.guess_type(caminho)[0] or "application/octet-stream"
+        if tipo.startswith("text/") or tipo in ("application/javascript",
+                                                "application/json"):
+            tipo += "; charset=utf-8"
+        try:
+            with open(caminho, "rb") as f:
+                dados = f.read()
+        except Exception:
+            self._responder(500, {"erro": "nao consegui ler o arquivo"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", tipo)
+        self.send_header("Content-Length", str(len(dados)))
+        self.send_header("Cache-Control", cache)
+        self.end_headers()
+        try:
+            self.wfile.write(dados)
+        except Exception:
+            pass
+
     def _corpo_json(self):
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -869,8 +1219,39 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         rota = urllib.parse.urlparse(self.path).path
         ip = self.client_address[0]
-        if rota in ("/", "/health"):
+        if rota == "/health":
             self._responder(200, {"servico": "imvu-status presente", "ok": True})
+        elif rota in ("/", "/index.html"):
+            self._servir_arquivo(WEB_DIR, "index.html")
+        elif rota == "/manifest.webmanifest":
+            self._servir_arquivo(WEB_DIR, "manifest.webmanifest")
+        elif rota == "/favicon.ico":
+            self._servir_arquivo(ASSETS_DIR, "icon.png", cache="public, max-age=86400")
+        elif rota.startswith("/web/"):
+            self._servir_arquivo(WEB_DIR, rota[len("/web/"):])
+        elif rota.startswith("/assets/"):
+            self._servir_arquivo(ASSETS_DIR, rota[len("/assets/"):],
+                                 cache="public, max-age=86400")
+        elif rota == "/api/config":
+            self._responder(200, config_publica())
+        elif rota == "/api/nick":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            nick = (qs.get("nick") or [""])[0]
+            codigo, resposta = checar_nick_publico(nick, ip)
+            self._responder(codigo, resposta)
+        elif rota == "/api/sala":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            rid = (qs.get("id") or [""])[0]
+            if not rate_ok("pub:" + ip, maximo=60, janela=60):
+                self._responder(429, {"erro": "muitas tentativas; espere um pouco"})
+                return
+            try:
+                self._responder(200, buscar_sala_publica(rid))
+            except ErroAPI as e:
+                if "too many requests" in str(e).lower():
+                    self._responder(429, {"erro": "muitas requisicoes; tente de novo em alguns minutos"})
+                else:
+                    self._responder(404, {"erro": str(e)})
         elif rota == "/status":
             if not rate_ok(ip):
                 self._responder(429, {"erro": "muitas tentativas; espere um pouco"})
@@ -890,6 +1271,9 @@ class Handler(BaseHTTPRequestHandler):
             info.update({
                 "estado_login": SESSAO.estado,
                 "ultimo_erro": SESSAO.ultimo_erro,
+                "keepalive_minutos": KEEPALIVE_MINUTOS,
+                "sessao_validada_ha_seg": (int(time.time() - SESSAO.valido_em)
+                                           if SESSAO.valido_em else None),
                 "creditos_por_envio": GIFT_CREDITOS,
                 "janela_horas": GIFT_JANELA_HORAS,
                 "idade_minima_dias": GIFT_IDADE_MINIMA_DIAS,
@@ -936,6 +1320,20 @@ def aquecer_login():
         _log(f"login pendente ({SESSAO.estado}): {SESSAO.ultimo_erro}")
 
 
+def manter_sessao_viva():
+    intervalo = KEEPALIVE_MINUTOS * 60
+    while intervalo > 0:
+        time.sleep(intervalo)
+        try:
+            if SESSAO.manter_viva():
+                _log("keep-alive: sessao do IMVU renovada")
+            else:
+                _log(f"keep-alive: sessao fora ({SESSAO.estado}: {SESSAO.ultimo_erro})"
+                     " — rode o configurar_presente.bat e atualize a IMVU_SESSAO")
+        except Exception as e:
+            _log(f"keep-alive: falhou ({e})")
+
+
 def main():
     criar_pastas()
     init_db()
@@ -943,6 +1341,9 @@ def main():
     if SESSAO.carregar_sessao():
         _log("sessao salva encontrada; validando...")
     threading.Thread(target=aquecer_login, daemon=True).start()
+    if KEEPALIVE_MINUTOS > 0:
+        threading.Thread(target=manter_sessao_viva, daemon=True).start()
+        _log(f"keep-alive ligado (a cada {KEEPALIVE_MINUTOS} min)")
     servidor = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     servidor.daemon_threads = True
     _log(f"servindo na porta {PORT}")

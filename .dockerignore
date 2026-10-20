@@ -1,0 +1,14 @@
+.git
+.github
+.gitignore
+buildozer.spec
+ci
+cli
+dados
+tests
+assets
+__pycache__
+*.pyc
+bin
+.buildozer
+README.md

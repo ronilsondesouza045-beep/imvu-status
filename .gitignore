@@ -1,8 +1,16 @@
 bin/
 .buildozer/
+.gradle/
 __pycache__/
 *.pyc
+.pytest_cache/
+.venv/
+venv/
+dados/
+*.db
+*.db-wal
+*.db-shm
 cookies.json
-.gradle/
 server/dados/
 google_creds.py
+.env

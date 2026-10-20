@@ -1,27 +1,39 @@
 services:
   - type: web
-    name: imvu-status-presente
+    name: imvu-status
     runtime: python
     plan: free
-    startCommand: python server/app.py
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn server.app:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"
+    healthCheckPath: /api/health
     envVars:
-      - key: IMVU_SESSAO
-        sync: false
+      - key: TZ
+        value: America/Sao_Paulo
+      - key: COLETOR_ATIVO
+        value: "1"
+      - key: POLL_WATCH
+        value: "15"
+      - key: POLL_AVATAR
+        value: "120"
+      - key: POLL_SALA
+        value: "45"
+      - key: SALAS_POR_CICLO
+        value: "6"
+      - key: DIRETORIO_MINUTOS
+        value: "10"
+      - key: MAX_WATCH_POR_DEVICE
+        value: "10"
+      - key: RETENCAO_SNAPSHOTS_DIAS
+        value: "14"
+      - key: RETENCAO_EVENTOS_DIAS
+        value: "180"
+      - key: RETENCAO_ALERTAS_DIAS
+        value: "60"
       - key: ADMIN_TOKEN
         sync: false
-      - key: FIREBASE_KEY
-        value: "AIzaSyAsKQrTAhV5FqvnzZ69QUdG5j4qExZ6ijQ"
-      - key: EXIGIR_LOGIN
-        value: "1"
-      - key: PRESENTE_CREDITOS
-        value: "100"
-      - key: GIFT_JANELA_HORAS
-        value: "24"
-      - key: GIFT_IDADE_MINIMA_DIAS
-        value: "7"
-      - key: GIFT_LIMITE_IP_AVATARES
-        value: "3"
-      - key: GIFT_LIMITE_DIARIO
-        value: "10"
-      - key: KEEPALIVE_MINUTOS
-        value: "5"
+      - key: IA_API_KEY
+        sync: false
+      - key: IA_MODEL
+        value: gpt-4o-mini
+      - key: DATABASE_URL
+        sync: false

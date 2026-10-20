@@ -1,1861 +1,1237 @@
 # -*- coding: utf-8 -*-
-"""
-IMVU Status - app Android (KivyMD) que consulta a API publica do IMVU.
-
-Mostra: online/offline, disponibilidade, sala atual (publica/privada quando o
-IMVU expoe), diretorio de salas publicas e login opcional na sua conta.
-Nao faz varredura de pessoas nem furar localizacao desativada.
-
-Compilado para APK via buildozer (GitHub Actions). Veja README.md.
-"""
-
-import http.cookiejar
-import html as htmlmod
-import json
-import re
-import ssl
-import threading
-import urllib.error
-import urllib.parse
-import urllib.request
-import base64
 import datetime
-import hashlib
+import json
 import os
 import secrets
+import threading
 import time
 import webbrowser
+from urllib.parse import quote
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
+import requests
 from kivy.clock import Clock
-from kivy.lang import Builder
+from kivy.core.window import Window
+from kivy.graphics import Color, Rectangle
 from kivy.metrics import dp
+from kivy.uix.behaviors import ButtonBehavior
+from kivy.uix.image import Image
+from kivy.uix.screenmanager import NoTransition, ScreenManager
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.widget import Widget
+from kivy.utils import escape_markup
 
 from kivymd.app import MDApp
+from kivymd.uix.bottomnavigation import MDBottomNavigation, MDBottomNavigationItem
+from kivymd.uix.boxlayout import MDBoxLayout
+from kivymd.uix.button import MDFlatButton, MDIconButton, MDRaisedButton
+from kivymd.uix.card import MDCard
+from kivymd.uix.label import MDLabel
 from kivymd.uix.screen import MDScreen
-from kivymd.uix.toolbar import MDTopAppBar  # noqa: F401
-from kivymd.uix.bottomnavigation import MDBottomNavigation, MDBottomNavigationItem  # noqa: F401
-from kivymd.uix.card import MDCard  # noqa: F401
-from kivymd.uix.label import MDLabel, MDIcon  # noqa: F401
-from kivymd.uix.button import MDRaisedButton, MDFlatButton, MDFillRoundFlatIconButton  # noqa: F401
-from kivymd.uix.textfield import MDTextField  # noqa: F401
-from kivymd.uix.spinner import MDSpinner  # noqa: F401
-from kivymd.uix.boxlayout import MDBoxLayout  # noqa: F401
-from kivymd.uix.selectioncontrol import MDCheckbox  # noqa: F401
+from kivymd.uix.selectioncontrol import MDSwitch
+from kivymd.uix.snackbar import Snackbar
+from kivymd.uix.textfield import MDTextField
+from kivymd.uix.toolbar import MDTopAppBar
 
-API = "https://api.imvu.com"
-UA = ("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
+APP_VERSAO = "3.0.0"
+DEFAULT_API = os.environ.get("IMVU_API_URL", "https://imvu-status.onrender.com").rstrip("/")
+NOME_ARQUIVO = "config.json"
 
-APP_VERSAO = "2.0.0"
-REPO_GH = "ronilsondesouza045-beep/imvu-status"
-RELEASES_API = f"https://api.github.com/repos/{REPO_GH}/releases/latest"
+FUNDO = (0.027, 0.043, 0.071, 1)
+CARTAO = (0.045, 0.075, 0.118, 1)
+CARTAO_CLARO = (0.063, 0.102, 0.157, 1)
+TEXTO = (0.92, 0.95, 0.98, 1)
+MUTED = (0.55, 0.66, 0.76, 1)
+MUTED_ESCURO = (0.38, 0.48, 0.58, 1)
+ACCENT = (0.18, 0.83, 0.75, 1)
+OK = (0.24, 0.84, 0.62, 1)
+ERRO = (0.97, 0.45, 0.45, 1)
+AVISO = (0.98, 0.75, 0.35, 1)
 
-# URL do seu backend do presente gratis (veja server/app.py e o README).
-# Troque pelo endereco que voce hospedar (ex: https://xxxx.onrender.com).
-# O app so conversa com esse servidor: sua conta e seus creditos NUNCA
-# ficam no APK nem aparecem na interface.
-PRESENTE_URL = "https://imvu-status-presente.onrender.com"
-
-# Login gratuito do app (Firebase Authentication - email e senha).
-# Para ativar: crie um projeto gratis em https://console.firebase.google.com,
-# ligue o metodo "E-mail/senha" em Authentication e cole a Web API Key abaixo
-# (e tambem no servidor: variavel FIREBASE_KEY). Passo a passo no README.
-FIREBASE_KEY = "AIzaSyAsKQrTAhV5FqvnzZ69QUdG5j4qExZ6ijQ"
-FB_SIGNUP = "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key="
-FB_LOGIN = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key="
-FB_LOOKUP = "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key="
-FB_OOB = "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key="
-FB_REFRESH = "https://securetoken.googleapis.com/v1/token?key="
-FB_IDP = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key="
-
-# Entrada com Google: crie um "ID do cliente OAuth" do tipo "Aplicativo para
-# computador" no Google Cloud Console do projeto. As credenciais NUNCA vao no
-# repositorio (o GitHub bloqueia): crie um arquivo "google_creds.py" ao lado
-# deste com GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET (ou configure os Secrets
-# GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET no GitHub, que o build gera sozinho).
-GOOGLE_CLIENT_ID = ""
-GOOGLE_CLIENT_SECRET = ""
-try:
-    import google_creds
-    GOOGLE_CLIENT_ID = getattr(google_creds, "GOOGLE_CLIENT_ID", "") or GOOGLE_CLIENT_ID
-    GOOGLE_CLIENT_SECRET = getattr(google_creds, "GOOGLE_CLIENT_SECRET", "") or GOOGLE_CLIENT_SECRET
-except Exception:
-    pass
-GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-
-try:
-    import certifi
-    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
-except Exception:
-    _SSL_CTX = ssl.create_default_context()
-
-VERDE = "#4CAF50"
-VERMELHO = "#EF5350"
-AMARELO = "#FFB300"
-
-
-class ErroAPI(Exception):
-    pass
-
-
-def _limpa(texto):
-    return str(texto or "").replace("[", "(").replace("]", ")")
-
-
-def _data_epoch(seg):
-    try:
-        return datetime.datetime.fromtimestamp(int(seg), tz=datetime.timezone.utc).strftime("%Y-%m-%d")
-    except Exception:
-        return "?"
-
-
-def _versao_tupla(txt):
-    partes = re.findall(r"\d+", str(txt or ""))
-    return tuple(int(p) for p in partes[:4]) or (0,)
-
-
-_APARELHO_CACHE = {"id": None}
-
-
-def _id_aparelho():
-    if _APARELHO_CACHE["id"] is not None:
-        return _APARELHO_CACHE["id"]
-    vid = ""
-    try:
-        from jnius import autoclass
-        atividade = autoclass("org.kivy.android.PythonActivity").mActivity
-        secure = autoclass("android.provider.Settings$Secure")
-        aid = secure.getString(atividade.getContentResolver(), "android_id")
-        if aid:
-            vid = hashlib.sha256(("imvu-status:" + str(aid)).encode("utf-8")).hexdigest()[:32]
-    except Exception:
-        pass
-    if not vid:
-        try:
-            from kivy.app import App
-            pasta = App.get_running_app().user_data_dir
-            caminho = os.path.join(pasta, "aparelho.txt")
-            if os.path.exists(caminho):
-                with open(caminho, "r", encoding="utf-8") as f:
-                    vid = (f.read() or "").strip()
-            if not vid:
-                vid = hashlib.sha256(os.urandom(32)).hexdigest()[:32]
-                os.makedirs(pasta, exist_ok=True)
-                with open(caminho, "w", encoding="utf-8") as f:
-                    f.write(vid)
-        except Exception:
-            vid = ""
-    _APARELHO_CACHE["id"] = vid
-    return vid
-
-
-def _fb_post(url, dados):
-    corpo = json.dumps(dados).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=corpo, method="POST",
-        headers={"Content-Type": "application/json; charset=utf-8",
-                 "User-Agent": UA},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
-            return json.loads(resp.read().decode("utf-8", errors="replace")), None
-    except urllib.error.HTTPError as e:
-        try:
-            js = json.loads(e.read().decode("utf-8", errors="replace"))
-            msg = str(((js.get("error") or {}).get("message")) or "").strip()
-        except Exception:
-            msg = ""
-        return None, (msg or f"HTTP {e.code}")
-    except Exception as e:
-        return None, f"falha de rede: {e}"
-
-
-_ERROS_FB = {
-    "EMAIL_EXISTS": "esse email ja tem conta; toque em ENTRAR",
-    "EMAIL_NOT_FOUND": "email ou senha incorretos",
-    "INVALID_PASSWORD": "email ou senha incorretos",
-    "INVALID_LOGIN_CREDENTIALS": "email ou senha incorretos",
-    "INVALID_EMAIL": "email invalido",
-    "MISSING_PASSWORD": "digite a senha",
-    "MISSING_EMAIL": "digite o email",
-    "WEAK_PASSWORD": "senha muito curta (minimo 6 caracteres)",
-    "PASSWORD_DOES_NOT_MEET_REQUIREMENTS": "senha muito fraca; use 6+ caracteres",
-    "USER_DISABLED": "essa conta foi desativada",
-    "TOO_MANY_ATTEMPTS_TRY_LATER": "muitas tentativas; espere alguns minutos",
-    "QUOTA_EXCEEDED": "limite do servidor de login; tente mais tarde",
-    "FEDERATED_USER_ID_ALREADY_LINKED": "esse email ja tem conta; entre com o email e a senha",
-    "ACCOUNT_EXISTS_WITH_DIFFERENT_CREDENTIAL": "esse email ja tem conta; entre com o email e a senha",
+TIPOS = {
+    "online": "entrou online",
+    "offline": "ficou offline",
+    "sala": "mudou de sala",
+    "look": "trocou de look",
+    "disponibilidade": "mudou a disponibilidade",
+    "suspeita": "possivel modo offline",
 }
 
 
-def _fb_err(msg):
-    chave = str(msg or "").split(" : ")[0].strip().upper()
-    return _ERROS_FB.get(chave, "nao deu para completar; tente de novo")
-
-
-def _post_form(url, dados):
-    corpo = urllib.parse.urlencode(dados).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=corpo, method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded",
-                 "User-Agent": UA},
-    )
+def formatar_data(valor):
+    if not valor:
+        return "--"
     try:
-        with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
-            return json.loads(resp.read().decode("utf-8", errors="replace")), None
-    except urllib.error.HTTPError as e:
+        texto = str(valor).replace("Z", "+00:00")
+        momento = datetime.datetime.fromisoformat(texto)
+        if momento.tzinfo is not None:
+            momento = momento.astimezone()
+        return momento.strftime("%d/%m %H:%M")
+    except Exception:
+        return str(valor)
+
+
+def formatar_minutos(valor):
+    total = int(valor or 0)
+    if total < 60:
+        return f"{total} min"
+    horas, resto = divmod(total, 60)
+    return f"{horas}h{(' ' + str(resto) + 'min') if resto else ''}"
+
+
+def formatar_previsao(previsao):
+    if not previsao or not previsao.get("proxima"):
+        return "Sem dados suficientes para prever."
+    confianca = int(round(float(previsao.get("confianca") or 0) * 100))
+    return f"Provavel online em {formatar_data(previsao.get('proxima'))} (confianca {confianca}%)"
+
+
+class ApiError(Exception):
+    pass
+
+
+class Api:
+    def __init__(self, base):
+        self.base = (base or DEFAULT_API).rstrip("/")
+
+    def _pedir(self, metodo, caminho, params=None, corpo=None):
         try:
-            js = json.loads(e.read().decode("utf-8", errors="replace"))
-            err = js.get("error")
-            msg = str((js.get("error_description") or (err if isinstance(err, str) else "")) or "").strip()
-        except Exception:
-            msg = ""
-        return None, (msg or f"HTTP {e.code}")
-    except Exception as e:
-        return None, f"falha de rede: {e}"
-
-
-def _abrir_url(url):
-    try:
-        from android import open_url
-        open_url(url)
-        return True
-    except Exception:
-        pass
-    try:
-        return webbrowser.open(url)
-    except Exception:
-        return False
-
-
-def _email_mascarado(email):
-    email = str(email or "")
-    if "@" not in email:
-        return email
-    usuario, dominio = email.split("@", 1)
-    if len(usuario) <= 2:
-        return usuario[:1] + "***@" + dominio
-    return usuario[:1] + "***" + usuario[-1] + "@" + dominio
-
-
-def _google_ligado():
-    return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
-
-
-_PAGINA_OK = ("<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
-              "<title>IMVU Status</title><style>"
-              "body{margin:0;height:100vh;display:flex;align-items:center;"
-              "justify-content:center;background:#0f172a;color:#e2e8f0;"
-              "font-family:sans-serif;text-align:center}h1{font-size:22px}"
-              "p{color:#94a3b8}</style></head><body><div><h1>Tudo certo!</h1>"
-              "<p>Login concluido. Pode fechar esta aba e voltar para o app"
-              " IMVU Status.</p></div></body></html>")
-
-
-def google_login_flow():
-    verifier = secrets.token_urlsafe(64)
-    challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(verifier.encode("utf-8")).digest()).rstrip(b"=").decode("ascii")
-    estado = secrets.token_urlsafe(16)
-    resultado = {}
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            resultado["code"] = (params.get("code") or [""])[0]
-            resultado["error"] = (params.get("error") or [""])[0]
-            resultado["state"] = (params.get("state") or [""])[0]
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
+            resposta = requests.request(
+                metodo,
+                self.base + caminho,
+                params=params,
+                json=corpo,
+                timeout=25,
+                headers={"Accept": "application/json", "User-Agent": "IMVUStatus/" + APP_VERSAO},
+            )
+        except requests.RequestException as exc:
+            raise ApiError("sem conexao com o servidor; verifique a internet e a URL da API") from exc
+        if resposta.status_code >= 400:
+            detalhe = None
             try:
-                self.wfile.write(_PAGINA_OK.encode("utf-8"))
+                dados = resposta.json()
+                detalhe = dados.get("detail") or dados.get("erro")
+            except Exception:
+                detalhe = None
+            if isinstance(detalhe, list) and detalhe:
+                detalhe = detalhe[0].get("msg") if isinstance(detalhe[0], dict) else str(detalhe[0])
+            raise ApiError(str(detalhe) if detalhe else f"o servidor respondeu {resposta.status_code}")
+        try:
+            return resposta.json()
+        except Exception as exc:
+            raise ApiError("resposta invalida do servidor") from exc
+
+    def health(self):
+        return self._pedir("GET", "/api/health")
+
+    def config(self):
+        return self._pedir("GET", "/api/config")
+
+    def status(self, nick):
+        return self._pedir("GET", "/api/status/" + quote(nick, safe=""))
+
+    def historico(self, nick, horas=168):
+        return self._pedir("GET", "/api/avatar/" + quote(nick, safe="") + "/history", params={"horas": horas})
+
+    def looks(self, nick):
+        return self._pedir("GET", "/api/avatar/" + quote(nick, safe="") + "/looks")
+
+    def salas(self, horas=24, limite=20):
+        return self._pedir("GET", "/api/rooms/top", params={"horas": horas, "limite": limite})
+
+    def sala(self, rid, horas=24):
+        return self._pedir("GET", "/api/rooms/" + quote(str(rid), safe="") + "/history", params={"horas": horas})
+
+    def diretorio(self, letra):
+        return self._pedir("GET", "/api/rooms/directory", params={"letra": letra})
+
+    def watch(self, device):
+        return self._pedir("GET", "/api/watch", params={"device": device})
+
+    def adicionar_watch(self, device, nick):
+        return self._pedir("POST", "/api/watch", corpo={"device": device, "nick": nick, "notificar": True})
+
+    def remover_watch(self, device, nick):
+        return self._pedir("DELETE", "/api/watch/" + quote(nick, safe=""), params={"device": device})
+
+    def alertas(self, device):
+        return self._pedir("GET", "/api/alerts", params={"device": device, "limite": 50})
+
+    def marcar_vistos(self, device, ids):
+        return self._pedir("POST", "/api/alerts/seen", corpo={"device": device, "ids": ids})
+
+
+class Live(threading.Thread):
+    def __init__(self, api, device, ao_evento):
+        super().__init__(daemon=True)
+        self.api = api
+        self.device = device
+        self.ao_evento = ao_evento
+        self.parar_flag = threading.Event()
+
+    def parar(self):
+        self.parar_flag.set()
+
+    def run(self):
+        while not self.parar_flag.is_set():
+            try:
+                resposta = requests.get(
+                    self.api.base + "/api/events",
+                    params={"device": self.device},
+                    stream=True,
+                    timeout=(10, 60),
+                    headers={"Accept": "text/event-stream", "User-Agent": "IMVUStatus/" + APP_VERSAO},
+                )
+                with resposta:
+                    if resposta.status_code == 200:
+                        for linha in resposta.iter_lines(decode_unicode=True):
+                            if self.parar_flag.is_set():
+                                return
+                            if not linha or not linha.startswith("data:"):
+                                continue
+                            bruto = linha[5:].strip()
+                            if not bruto:
+                                continue
+                            try:
+                                evento = json.loads(bruto)
+                            except Exception:
+                                continue
+                            Clock.schedule_once(lambda dt, e=evento: self.ao_evento(e), 0)
             except Exception:
                 pass
-
-        def log_message(self, *args):
-            pass
-
-    try:
-        httpd = HTTPServer(("127.0.0.1", 0), Handler)
-    except Exception as e:
-        return None, f"nao consegui abrir a porta local: {e}"
-    httpd.timeout = 1
-    porta = httpd.server_address[1]
-    redirect = f"http://127.0.0.1:{porta}"
-    url = GOOGLE_AUTH_URL + "?" + urllib.parse.urlencode({
-        "client_id": GOOGLE_CLIENT_ID,
-        "redirect_uri": redirect,
-        "response_type": "code",
-        "scope": "openid email profile",
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-        "state": estado,
-        "prompt": "select_account",
-    })
-    if not _abrir_url(url):
-        try:
-            httpd.server_close()
-        except Exception:
-            pass
-        return None, "NAO_ABRIU_NAVEGADOR"
-    inicio = time.time()
-    try:
-        while time.time() - inicio < 300:
-            httpd.handle_request()
-            if resultado.get("code") or resultado.get("error"):
-                break
-    finally:
-        try:
-            httpd.server_close()
-        except Exception:
-            pass
-    if resultado.get("error"):
-        if resultado["error"] == "access_denied":
-            return None, ("login cancelado, ou bloqueado pelo Google. "
-                          "Se nao foi voce, avise o dono do app")
-        return None, str(resultado["error"])
-    code = resultado.get("code") or ""
-    if not code:
-        return None, "o login demorou demais; tente de novo"
-    if resultado.get("state") != estado:
-        return None, "resposta inesperada do Google; tente de novo"
-    js, erro = _post_form(GOOGLE_TOKEN_URL, {
-        "code": code,
-        "client_id": GOOGLE_CLIENT_ID,
-        "client_secret": GOOGLE_CLIENT_SECRET,
-        "redirect_uri": redirect,
-        "grant_type": "authorization_code",
-        "code_verifier": verifier,
-    })
-    if not js or not js.get("id_token"):
-        return None, erro or "o Google nao devolveu o login"
-    js2, erro2 = _fb_post(FB_IDP + FIREBASE_KEY, {
-        "postBody": "id_token=%s&providerId=google.com" % js["id_token"],
-        "requestUri": "http://localhost",
-        "returnIdpCredential": True,
-        "returnSecureToken": True,
-    })
-    if not js2 or not js2.get("idToken"):
-        return None, erro2 or "nao deu para entrar com o Google"
-    dados = {
-        "idToken": js2.get("idToken") or "",
-        "refreshToken": js2.get("refreshToken") or "",
-        "email": js2.get("email") or "",
-        "uid": js2.get("localId") or "",
-        "verificado": True,
-    }
-    js3, _ = _fb_post(FB_LOOKUP + FIREBASE_KEY, {"idToken": dados["idToken"]})
-    if js3 and js3.get("users"):
-        u = js3["users"][0]
-        dados["email"] = u.get("email") or dados["email"]
-        dados["verificado"] = bool(u.get("emailVerified"))
-    return dados, None
+            if not self.parar_flag.is_set():
+                time.sleep(4)
 
 
-_CONTA_ARQ = {"caminho": None}
+class CartaoClicavel(MDCard, ButtonBehavior):
+    pass
 
 
-def _conta_arquivo():
-    if _CONTA_ARQ["caminho"] is None:
-        try:
-            from kivy.app import App
-            pasta = App.get_running_app().user_data_dir
-            os.makedirs(pasta, exist_ok=True)
-            _CONTA_ARQ["caminho"] = os.path.join(pasta, "conta.json")
-        except Exception:
-            _CONTA_ARQ["caminho"] = ""
-    return _CONTA_ARQ["caminho"]
-
-
-def conta_salvar(dados):
-    caminho = _conta_arquivo()
-    if not caminho:
-        return
-    try:
-        with open(caminho, "w", encoding="utf-8") as f:
-            json.dump(dados, f)
-    except Exception:
-        pass
-
-
-def conta_carregar():
-    caminho = _conta_arquivo()
-    if not caminho or not os.path.exists(caminho):
-        return {}
-    try:
-        with open(caminho, "r", encoding="utf-8") as f:
-            dados = json.load(f)
-        return dados if isinstance(dados, dict) else {}
-    except Exception:
-        return {}
-
-
-def conta_limpar():
-    caminho = _conta_arquivo()
-    try:
-        if caminho and os.path.exists(caminho):
-            os.remove(caminho)
-    except Exception:
-        pass
-
-
-def conta_ativa():
-    """Devolve a conta logada com idToken fresco, ou None.
-
-    Usa o refresh token salvo no aparelho; ninguem digita senha de novo.
-    """
-    guardado = conta_carregar()
-    refresh = guardado.get("refreshToken") or ""
-    if not refresh or "COLE_AQUI" in FIREBASE_KEY:
-        return None
-    js, erro = _fb_post(FB_REFRESH + FIREBASE_KEY, {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh,
-    })
-    if not js:
-        return None
-    dados = {
-        "idToken": js.get("id_token") or "",
-        "refreshToken": js.get("refresh_token") or refresh,
-        "email": guardado.get("email") or "",
-        "uid": js.get("user_id") or guardado.get("uid") or "",
-        "verificado": bool(guardado.get("verificado")),
-    }
-    if not dados["idToken"]:
-        return None
-    js2, _ = _fb_post(FB_LOOKUP + FIREBASE_KEY, {"idToken": dados["idToken"]})
-    if js2 and js2.get("users"):
-        u = js2["users"][0]
-        dados["email"] = u.get("email") or dados["email"]
-        dados["verificado"] = bool(u.get("emailVerified"))
-    conta_salvar(dados)
-    return dados
-
-
-class ClienteIMVU:
-    def __init__(self):
-        self.cookies = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(self.cookies),
-            urllib.request.HTTPSHandler(context=_SSL_CTX),
-        )
-        self.logado = False
-        self.nick = None
-        self.sauce = None
-
-    def _req(self, url, metodo="GET", corpo=None, json_sim=True):
-        headers = {"User-Agent": UA, "Accept": "application/json, text/plain, */*"}
-        if self.sauce and metodo != "GET":
-            headers["x-imvu-sauce"] = self.sauce
-            headers["x-imvu-application"] = "next_desktop/1"
-        dados = None
-        if corpo is not None:
-            dados = json.dumps(corpo).encode("utf-8")
-            headers["Content-Type"] = "application/json; charset=utf-8"
-        req = urllib.request.Request(url, data=dados, headers=headers, method=metodo)
-        try:
-            with self.opener.open(req, timeout=25) as resp:
-                texto = resp.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as e:
-            try:
-                texto = e.read().decode("utf-8", errors="replace")
-            except Exception:
-                raise ErroAPI(f"HTTP {e.code}")
-        except Exception as e:
-            raise ErroAPI(f"falha de rede: {e}")
-        if "too many requests" in texto.lower():
-            raise ErroAPI("IMVU bloqueou temporariamente (muitas requisicoes).")
-        if not json_sim:
-            return texto
-        try:
-            js = json.loads(texto)
-        except Exception:
-            raise ErroAPI("resposta inesperada do IMVU")
-        if isinstance(js, dict) and js.get("status") == "failure":
-            raise ErroAPI(f"{js.get('error', '?')}: {js.get('message', '?')}")
-        return js
-
-    def baixar_imagem(self, url):
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with self.opener.open(req, timeout=25) as resp:
-                dados = resp.read()
-        except Exception:
-            return None
-        if dados and (dados[:4] == b"\x89PNG" or dados[:3] == b"\xff\xd8\xff"):
-            return dados
-        return None
-
-    def resolver_nick(self, nick):
-        url = f"{API}/user?" + urllib.parse.urlencode({"username": nick})
-        js = self._req(url)
-        raiz = js.get("denormalized", {})
-        colecao = raiz.get(js.get("id"), {})
-        itens = (colecao.get("data") or {}).get("items") or []
-        if not itens:
-            return None
-        node_url = itens[0]
-        node = raiz.get(node_url, {})
-        m = re.search(r"user-(\d+)$", node_url)
-        return {
-            "cid": m.group(1) if m else "?",
-            "data": node.get("data", {}),
-            "rel": node.get("relations", {}),
-        }
-
-    def checar(self, nick):
-        u = self.resolver_nick(nick)
-        if not u:
-            return None
-        presenca = {}
-        try:
-            purl = u["rel"].get("presence") or f"{API}/presence/presence-{u['cid']}"
-            pjs = self._req(purl)
-            pnode = (pjs.get("denormalized") or {}).get(purl) or {}
-            presenca = pnode.get("data", {})
-        except ErroAPI:
-            pass
-        online = bool(presenca.get("online", u["data"].get("online", False)))
-        resultado = {
-            "nick": u["data"].get("username") or nick,
-            "cid": u["cid"],
-            "online": online,
-            "availability": (u["data"].get("availability") or "").strip().lower(),
-            "data": u["data"],
-            "presence": presenca,
-            "sala": None,
-        }
-        if "current_room" in u["rel"]:
-            try:
-                rjs = self._req(u["rel"]["current_room"])
-                rnode = (rjs.get("denormalized") or {}).get(u["rel"]["current_room"]) or {}
-                resultado["sala"] = rnode.get("data", {})
-            except ErroAPI:
-                resultado["sala"] = {}
-        perfil = {}
-        try:
-            if "profile" in u["rel"]:
-                pjs = self._req(u["rel"]["profile"])
-                pnode = (pjs.get("denormalized") or {}).get(u["rel"]["profile"]) or {}
-                perfil = pnode.get("data", {})
-        except ErroAPI:
-            pass
-        look = None
-        try:
-            if "profile_outfit" in u["rel"]:
-                ojs = self._req(u["rel"]["profile_outfit"])
-                onode = (ojs.get("denormalized") or {}).get(u["rel"]["profile_outfit"]) or {}
-                odata = onode.get("data", {})
-                prods = [p.get("product_id") for p in (odata.get("products") or [])
-                         if isinstance(p, dict) and p.get("product_id")]
-                if prods:
-                    look = {"total": len(prods), "corpo": None}
-                    purl = f"{API}/product/product-{prods[0]}"
-                    try:
-                        prjs = self._req(purl)
-                        prnode = (prjs.get("denormalized") or {}).get(purl) or {}
-                        look["corpo"] = (prnode.get("data") or {}).get("product_name")
-                    except ErroAPI:
-                        pass
-        except ErroAPI:
-            pass
-        resultado["perfil"] = perfil
-        resultado["look"] = look
-        resultado["imagem_3d"] = u["data"].get("avatar_image")
-        resultado["retrato_3d"] = u["data"].get("avatar_portrait_image")
-        resultado["foto_perfil"] = perfil.get("image") or u["data"].get("thumbnail_url")
-        return resultado
-
-    def buscar_sala(self, room_id):
-        m = re.search(r"(\d+-\d+)", room_id or "")
-        if not m:
-            raise ErroAPI("ID invalido (ex: 12345678-1)")
-        rid = m.group(1)
-        texto = self._req(
-            f"https://www.imvu.com/rooms/show-room-details.php?room_instance_id={rid}",
-            json_sim=False,
-        )
-        mi = re.search(r"var roomInfo = (\{.*?\n\})\s*\n</script>", texto, re.S)
-        if not mi:
-            raise ErroAPI("Sala nao encontrada (so salas publicas do diretorio)")
-        bloco = mi.group(1)
-        bloco_py = re.sub(r"\btrue\b", "True", bloco)
-        bloco_py = re.sub(r"\bfalse\b", "False", bloco_py)
-        bloco_py = re.sub(r"\bnull\b", "None", bloco_py)
-        try:
-            info = eval(bloco_py, {"__builtins__": {}}, {})  # noqa: S307 (literal controlado)
-        except Exception:
-            campos = {
-                "room_name": (re.search(r"'room_name'\s*:\s*'([^']*)'", bloco) or [None, "?"])[1],
-                "owner": (re.search(r"'owner'\s*:\s*'([^']*)'", bloco) or [None, "?"])[1],
-                "count": (re.search(r"'count'\s*:\s*'(\d+)'", bloco) or [None, "?"])[1],
-                "max": (re.search(r"'max'\s*:\s*'(\d+)'", bloco) or [None, "?"])[1],
-                "desc": "",
-                "participants": [],
-            }
-            info = campos
-        partes = []
-        for p in info.get("participants") or []:
-            if isinstance(p, dict):
-                partes.append((_limpa(p.get("name", "?")), p.get("size", "")))
-            else:
-                partes.append((_limpa(p), ""))
-        return {
-            "id": rid,
-            "nome": _limpa(info.get("room_name", "?")),
-            "owner": _limpa(info.get("owner", "?")),
-            "count": info.get("count", "?"),
-            "max": info.get("max", "?"),
-            "desc": urllib.parse.unquote(str(info.get("desc") or "")),
-            "participantes": partes,
-        }
-
-    def login(self, usuario, senha, codigo=""):
-        corpo = {
-            "gdpr_cookie_acceptance": True,
-            "username": usuario,
-            "password": senha,
-            "remember_device": True,
-        }
-        if codigo:
-            corpo["2fa_code"] = codigo
-        try:
-            self._req(f"{API}/login", metodo="POST", corpo=corpo)
-        except ErroAPI as e:
-            msg = str(e)
-            if any(t in msg.lower() for t in ("2fa", "code", "verific", "challenge")):
-                return False, "2FA " + msg
-            return False, msg
-        try:
-            js = self._req(f"{API}/login/me")
-            node = (js.get("denormalized") or {}).get(js.get("id"), {})
-            self.sauce = (node.get("data") or {}).get("sauce")
-            self.logado = True
-            self.nick = usuario
-            return True, f"Logado como {usuario}"
-        except ErroAPI as e:
-            return False, f"login ok, mas /login/me falhou: {e}"
-
-
-def fmt_checagem(res):
-    d = res["data"]
-    nome = _limpa(d.get("display_name") or res["nick"])
-    cor = VERDE if res["online"] else VERMELHO
-    estado = "ONLINE" if res["online"] else "OFFLINE"
-    linhas = [
-        f"[b]{nome}[/b]  ({_limpa(res['nick'])} | CID {res['cid']})",
-        f"Status: [color={cor}][b]{estado}[/b][/color]",
-    ]
-    av = res.get("availability") or ""
-    rotulos = {"available": "Disponivel", "online": "Online", "away": "Ausente",
-               "dnd": "Nao perturbe (DND)", "offline": "Offline"}
-    if av:
-        linhas.append(f"Disponibilidade: {rotulos.get(av, _limpa(av))}")
-    sala = res.get("sala")
-    if sala:
-        privacy = str(sala.get("privacy") or "?").lower()
-        if "priv" in privacy:
-            tipo = f"[color={AMARELO}][b]PRIVADA[/b][/color]"
-        elif "pub" in privacy:
-            tipo = "publica"
-        else:
-            tipo = _limpa(privacy)
-        linhas.append(f"Sala atual: \"{_limpa(sala.get('name', '?'))}\" ({tipo})")
-        if not res["online"]:
-            linhas.append("[i](status offline, mas o perfil aponta essa sala — pode ser modo \"aparecer offline\")[/i]")
-    elif res["online"]:
-        linhas.append("Sala atual: nao exposta agora")
-    linhas.append(f"Pais: {_limpa(d.get('country') or '?')} | Membro desde {_data_epoch(d.get('registered'))}")
-    perfil = res.get("perfil") or {}
-    if perfil.get("approx_follower_count") is not None:
-        linhas.append(f"Seguidores: ~{perfil.get('approx_follower_count')}")
-    look = res.get("look")
-    if look:
-        corpo = _limpa(look.get("corpo")) if look.get("corpo") else "look atual"
-        linhas.append(f"Avatar/look: {corpo} ({look.get('total')} itens)")
-    marcas = []
-    if d.get("is_vip"):
-        marcas.append("VIP")
-    if d.get("is_ap") or d.get("is_ap_plus"):
-        marcas.append("AccessPass")
-    if d.get("is_creator"):
-        marcas.append("Criador")
-    if marcas:
-        linhas.append("Perfil: " + ", ".join(marcas))
-    if d.get("tagline"):
-        linhas.append(f"[i]{_limpa(d['tagline'])[:140]}[/i]")
-    return "\n".join(linhas)
-
-
-def fmt_sala(info):
-    linhas = [
-        f"[b]{info['nome']}[/b]  ({info['id']})",
-        f"Dono: {info['owner']}",
-        f"Ocupacao: {info['count']}/{info['max']}",
-    ]
-    if info.get("desc"):
-        linhas.append(f"[i]{_limpa(info['desc'])[:220]}[/i]")
-    if info["participantes"]:
-        linhas.append("[b]Participantes:[/b]")
-        for nome, tam in info["participantes"]:
-            linhas.append(f"  • {nome}" + (f" ({tam} KB)" if tam else ""))
-    elif str(info.get("count")) not in ("0", "?", "None"):
-        linhas.append("(lista de participantes nao exposta)")
-    else:
-        linhas.append("sala vazia")
-    return "\n".join(linhas)
-
-
-KV = """
-<LoginScreen>:
-    MDBoxLayout:
-        orientation: "vertical"
-        canvas.before:
-            Color:
-                rgba: 1, 1, 1, .45
-            Rectangle:
-                pos: self.pos
-                size: self.size
-                source: "assets/fundo_app.jpg"
-
-        ScrollView:
-            do_scroll_x: False
-            MDBoxLayout:
-                orientation: "vertical"
-                size_hint_y: None
-                height: self.minimum_height
-                padding: dp(20)
-                spacing: dp(10)
-
-                Image:
-                    source: "assets/banner_login.jpg"
-                    size_hint_y: None
-                    height: dp(150)
-                    fit_mode: "contain"
-
-                MDLabel:
-                    markup: True
-                    halign: "center"
-                    text: "[b]IMVU Status[/b]"
-                    size_hint_y: None
-                    height: self.texture_size[1]
-                    text_size: self.width, None
-
-                MDLabel:
-                    halign: "center"
-                    markup: True
-                    text: "Entre com seu email para resgatar os 100 creditos gratis"
-                    size_hint_y: None
-                    height: self.texture_size[1]
-                    text_size: self.width, None
-
-                MDTextField:
-                    id: conta_email
-                    hint_text: "email"
-                    mode: "rectangle"
-                    on_text_validate: root.acao_principal()
-
-                MDTextField:
-                    id: conta_senha
-                    hint_text: "senha"
-                    password: True
-                    mode: "rectangle"
-                    on_text_validate: root.acao_principal()
-
-                MDTextField:
-                    id: conta_senha2
-                    hint_text: "repita a senha"
-                    password: True
-                    mode: "rectangle"
-                    opacity: 0
-                    disabled: True
-                    size_hint_y: None
-                    height: 0
-                    on_text_validate: root.acao_principal()
-
-                MDSpinner:
-                    id: login_spinner
-                    size_hint: None, None
-                    size: dp(32), dp(32)
-                    pos_hint: {"center_x": .5}
-                    active: False
-
-                MDRaisedButton:
-                    id: login_btn
-                    text: "ENTRAR"
-                    pos_hint: {"center_x": .5}
-                    on_release: root.acao_principal()
-
-                MDFlatButton:
-                    id: login_modo
-                    text: "nao tem conta? CRIAR CONTA"
-                    pos_hint: {"center_x": .5}
-                    on_release: root.mudar_modo()
-
-                MDFlatButton:
-                    id: login_esqueci
-                    text: "esqueci a senha"
-                    pos_hint: {"center_x": .5}
-                    on_release: root.esqueci_senha()
-
-                MDLabel:
-                    halign: "center"
-                    markup: True
-                    text: "ou"
-                    size_hint_y: None
-                    height: self.texture_size[1]
-                    text_size: self.width, None
-
-                MDFillRoundFlatIconButton:
-                    id: login_google
-                    icon: "google"
-                    text: "  CONECTAR COM GOOGLE"
-                    pos_hint: {"center_x": .5}
-                    on_release: root.entrar_google()
-
-                MDLabel:
-                    id: login_aviso
-                    markup: True
-                    halign: "center"
-                    text: ""
-                    size_hint_y: None
-                    height: self.texture_size[1]
-                    text_size: self.width, None
-
-<MainScreen>:
-    MDBoxLayout:
-        orientation: "vertical"
-        canvas.before:
-            Color:
-                rgba: 1, 1, 1, .45
-            Rectangle:
-                pos: self.pos
-                size: self.size
-                source: "assets/fundo_app.jpg"
-
-        MDTopAppBar:
-            title: "IMVU Status"
-            elevation: 3
-            md_bg_color: 0.06, 0.08, 0.12, .97
-
-        MDBottomNavigation:
-            panel_color: 0.08, 0.09, 0.12, 1
-
-            MDBottomNavigationItem:
-                name: "tab_nick"
-                text: "NICK"
-                icon: "account-search"
-                ScrollView:
-                    do_scroll_x: False
-                    MDBoxLayout:
-                        orientation: "vertical"
-                        size_hint_y: None
-                        height: self.minimum_height
-                        padding: dp(16)
-                        spacing: dp(12)
-                        MDTextField:
-                            id: nick_field
-                            hint_text: "nick do avatar"
-                            mode: "rectangle"
-                            on_text_validate: root.checar_nick()
-                        MDBoxLayout:
-                            orientation: "horizontal"
-                            size_hint_y: None
-                            height: dp(48)
-                            spacing: dp(8)
-                            MDRaisedButton:
-                                id: btn_monitor
-                                text: "MONITORAR"
-                                on_release: root.toggle_monitor()
-                            MDTextField:
-                                id: intervalo_field
-                                hint_text: "segundos"
-                                text: "30"
-                                mode: "rectangle"
-                                size_hint_x: 0.4
-                        MDCard:
-                            orientation: "vertical"
-                            padding: dp(14)
-                            spacing: dp(10)
-                            size_hint_y: None
-                            height: self.minimum_height
-                            radius: [dp(14)]
-                            Image:
-                                id: foto_avatar
-                                size_hint_y: None
-                                height: 0
-                                opacity: 0
-                                fit_mode: "contain"
-                            MDSpinner:
-                                id: spinner
-                                size_hint: None, None
-                                size: dp(36), dp(36)
-                                pos_hint: {"center_x": .5}
-                                active: False
-                            MDLabel:
-                                id: resultado
-                                markup: True
-                                text: "Digite um nick e toque em MONITORAR ou no botao CHECAR abaixo."
-                                size_hint_y: None
-                                height: self.texture_size[1]
-                                text_size: self.width, None
-                        MDRaisedButton:
-                            text: "CHECAR"
-                            on_release: root.checar_nick()
-
-            MDBottomNavigationItem:
-                name: "tab_sala"
-                text: "SALA"
-                icon: "magnify"
-                ScrollView:
-                    do_scroll_x: False
-                    MDBoxLayout:
-                        orientation: "vertical"
-                        size_hint_y: None
-                        height: self.minimum_height
-                        padding: dp(16)
-                        spacing: dp(12)
-                        MDTextField:
-                            id: sala_field
-                            hint_text: "ID da sala (ex: 12345678-1) ou link"
-                            mode: "rectangle"
-                            on_text_validate: root.buscar_sala()
-                        MDRaisedButton:
-                            text: "BUSCAR SALA"
-                            on_release: root.buscar_sala()
-                        MDCard:
-                            orientation: "vertical"
-                            padding: dp(14)
-                            size_hint_y: None
-                            height: self.minimum_height
-                            radius: [dp(14)]
-                            MDLabel:
-                                id: sala_result
-                                markup: True
-                                text: "Cole o ID de uma sala publica para ver dono, lotacao e participantes."
-                                size_hint_y: None
-                                height: self.texture_size[1]
-                                text_size: self.width, None
-
-            MDBottomNavigationItem:
-                name: "tab_conta"
-                text: "CONTA"
-                icon: "account-circle"
-                ScrollView:
-                    do_scroll_x: False
-                    MDBoxLayout:
-                        orientation: "vertical"
-                        size_hint_y: None
-                        height: self.minimum_height
-                        padding: dp(16)
-                        spacing: dp(12)
-
-                        MDCard:
-                            orientation: "vertical"
-                            padding: dp(16)
-                            spacing: dp(4)
-                            size_hint_y: None
-                            height: self.minimum_height
-                            radius: [dp(18)]
-                            md_bg_color: 0.10, 0.12, 0.17, .96
-                            Image:
-                                source: "assets/capa_conta.jpg"
-                                size_hint_y: None
-                                height: dp(110)
-                                fit_mode: "cover"
-                            MDBoxLayout:
-                                orientation: "horizontal"
-                                size_hint_y: None
-                                height: dp(52)
-                                spacing: dp(6)
-                                MDIcon:
-                                    icon: "account-circle"
-                                    font_size: dp(44)
-                                    theme_text_color: "Custom"
-                                    text_color: 0.30, 0.80, 0.85, 1
-                                    size_hint: None, None
-                                    size: dp(50), dp(50)
-                                    pos_hint: {"center_y": .5}
-                                MDBoxLayout:
-                                    orientation: "vertical"
-                                    pos_hint: {"center_y": .5}
-                                    MDLabel:
-                                        markup: True
-                                        text: "[b]Minha conta[/b]"
-                                        size_hint_y: None
-                                        height: self.texture_size[1]
-                                        text_size: self.width, None
-                                    MDLabel:
-                                        id: conta_status
-                                        markup: True
-                                        text: "carregando..."
-                                        font_style: "Caption"
-                                        theme_text_color: "Custom"
-                                        text_color: 0.60, 0.66, 0.72, 1
-                                        size_hint_y: None
-                                        height: self.texture_size[1]
-                                        text_size: self.width, None
-                            MDBoxLayout:
-                                orientation: "horizontal"
-                                size_hint_y: None
-                                height: dp(42)
-                                MDLabel:
-                                    id: conta_email
-                                    markup: True
-                                    text: ""
-                                    font_style: "Caption"
-                                    theme_text_color: "Custom"
-                                    text_color: 0.65, 0.72, 0.78, 1
-                                    size_hint_y: None
-                                    height: self.texture_size[1]
-                                    text_size: self.width, None
-                                MDIconButton:
-                                    id: btn_ver_email
-                                    icon: "eye"
-                                    theme_text_color: "Custom"
-                                    text_color: 0.65, 0.72, 0.78, 1
-                                    on_release: root.alternar_email()
-                            MDFlatButton:
-                                id: btn_sair_app
-                                text: "SAIR DA CONTA"
-                                theme_text_color: "Custom"
-                                text_color: 0.94, 0.42, 0.42, 1
-                                pos_hint: {"center_x": .5}
-                                on_release: root.sair_conta_app()
-
-                        MDCard:
-                            orientation: "vertical"
-                            padding: dp(16)
-                            spacing: dp(10)
-                            size_hint_y: None
-                            height: self.minimum_height
-                            radius: [dp(18)]
-                            md_bg_color: 0.10, 0.12, 0.17, .96
-                            MDBoxLayout:
-                                orientation: "horizontal"
-                                size_hint_y: None
-                                height: dp(28)
-                                spacing: dp(6)
-                                MDIcon:
-                                    icon: "link-variant"
-                                    font_size: dp(22)
-                                    theme_text_color: "Custom"
-                                    text_color: 0.30, 0.80, 0.85, 1
-                                    size_hint: None, None
-                                    size: dp(24), dp(24)
-                                    pos_hint: {"center_y": .5}
-                                MDLabel:
-                                    markup: True
-                                    text: "[b]Conexao IMVU (opcional)[/b]"
-                                    size_hint_y: None
-                                    height: self.texture_size[1]
-                                    text_size: self.width, None
-                            MDLabel:
-                                markup: True
-                                text: "Mostra presenca, sala e foto em tempo real. A senha vai somente para o IMVU; nada fica salvo no aparelho."
-                                font_style: "Caption"
-                                theme_text_color: "Custom"
-                                text_color: 0.60, 0.66, 0.72, 1
-                                size_hint_y: None
-                                height: self.texture_size[1]
-                                text_size: self.width, None
-                            MDTextField:
-                                id: login_user
-                                hint_text: "usuario IMVU"
-                                mode: "rectangle"
-                            MDTextField:
-                                id: login_pass
-                                hint_text: "senha"
-                                password: True
-                                mode: "rectangle"
-                            MDTextField:
-                                id: login_code
-                                hint_text: "codigo 2FA (so se o IMVU pedir)"
-                                mode: "rectangle"
-                            MDBoxLayout:
-                                orientation: "horizontal"
-                                size_hint_y: None
-                                height: dp(48)
-                                spacing: dp(8)
-                                MDRaisedButton:
-                                    text: "ENTRAR"
-                                    on_release: root.fazer_login()
-                                MDFlatButton:
-                                    text: "SAIR"
-                                    on_release: root.sair_conta()
-                            MDLabel:
-                                id: conta_result
-                                markup: True
-                                text: "sessao: anonimo"
-                                size_hint_y: None
-                                height: self.texture_size[1]
-                                text_size: self.width, None
-
-            MDBottomNavigationItem:
-                name: "tab_presente"
-                text: "PRESENTE"
-                icon: "gift"
-                ScrollView:
-                    do_scroll_x: False
-                    MDBoxLayout:
-                        orientation: "vertical"
-                        size_hint_y: None
-                        height: self.minimum_height
-                        padding: dp(16)
-                        spacing: dp(12)
-                        MDLabel:
-                            markup: True
-                            text: "Presente gratis: 100 CREDITOS a cada 24 horas para cada avatar! Digite seu nick, confirme que a conta e sua e resgate. Toque em VER WISHLIST para ver a lista de desejos do nick."
-                            size_hint_y: None
-                            height: self.texture_size[1]
-                            text_size: self.width, None
-                        MDTextField:
-                            id: presente_nick
-                            hint_text: "seu nick no IMVU"
-                            mode: "rectangle"
-                            on_text_validate: root.verificar_presente()
-                        MDTextField:
-                            id: presente_msg
-                            hint_text: "mensagem (opcional)"
-                            mode: "rectangle"
-                        MDBoxLayout:
-                            orientation: "horizontal"
-                            size_hint_y: None
-                            height: dp(44)
-                            spacing: dp(0)
-                            MDCheckbox:
-                                id: presente_confirmo
-                                size_hint: None, None
-                                size: dp(44), dp(44)
-                                pos_hint: {"center_y": .5}
-                            MDLabel:
-                                markup: True
-                                text: "Confirmo que este nick e a [b]minha conta[/b] no IMVU."
-                                size_hint_y: None
-                                height: self.texture_size[1]
-                                text_size: self.width, None
-                        MDBoxLayout:
-                            orientation: "horizontal"
-                            size_hint_y: None
-                            height: dp(48)
-                            spacing: dp(8)
-                            MDRaisedButton:
-                                text: "RESGATAR 100 CREDITOS"
-                                on_release: root.pegar_presente()
-                            MDFlatButton:
-                                text: "VER WISHLIST"
-                                on_release: root.verificar_presente()
-                        MDSpinner:
-                            id: presente_spinner
-                            size_hint: None, None
-                            size: dp(36), dp(36)
-                            pos_hint: {"center_x": .5}
-                            active: False
-                        MDCard:
-                            orientation: "vertical"
-                            padding: dp(14)
-                            spacing: dp(8)
-                            size_hint_y: None
-                            height: self.minimum_height
-                            radius: [dp(14)]
-                            MDLabel:
-                                id: presente_result
-                                markup: True
-                                text: "Digite seu nick, confirme que a conta e sua e toque em RESGATAR 100 CREDITOS."
-                                size_hint_y: None
-                                height: self.texture_size[1]
-                                text_size: self.width, None
-
-            MDBottomNavigationItem:
-                name: "tab_app"
-                text: "APP"
-                icon: "update"
-                ScrollView:
-                    do_scroll_x: False
-                    MDBoxLayout:
-                        orientation: "vertical"
-                        size_hint_y: None
-                        height: self.minimum_height
-                        padding: dp(16)
-                        spacing: dp(12)
-                        MDLabel:
-                            id: app_versao
-                            markup: True
-                            text: "Versao instalada: ?"
-                            size_hint_y: None
-                            height: self.texture_size[1]
-                            text_size: self.width, None
-                        MDRaisedButton:
-                            text: "VERIFICAR ATUALIZACAO"
-                            on_release: root.verificar_update(True)
-                        MDCard:
-                            orientation: "vertical"
-                            padding: dp(14)
-                            spacing: dp(8)
-                            size_hint_y: None
-                            height: self.minimum_height
-                            radius: [dp(14)]
-                            MDLabel:
-                                id: update_titulo
-                                markup: True
-                                text: "Toque em VERIFICAR ATUALIZACAO para ver se ha versao nova."
-                                size_hint_y: None
-                                height: self.texture_size[1]
-                                text_size: self.width, None
-                            MDLabel:
-                                id: update_notas
-                                markup: False
-                                text: ""
-                                size_hint_y: None
-                                height: self.texture_size[1]
-                                text_size: self.width, None
-                            MDRaisedButton:
-                                id: btn_baixar
-                                text: "BAIXAR ATUALIZACAO"
-                                opacity: 0
-                                disabled: True
-                                on_release: root.abrir_download()
-"""
-
-
-class LoginScreen(MDScreen):
-    def __init__(self, **kwargs):
+class GraficoBarras(Widget):
+    def __init__(self, valores=None, cor=ACCENT, **kwargs):
         super().__init__(**kwargs)
-        self.modo_criar = False
-        self._ocupado = False
+        self.valores = list(valores or [])
+        self.cor = cor
+        self.bind(pos=self._desenhar, size=self._desenhar)
 
-    def _ligada(self):
-        return "COLE_AQUI" not in FIREBASE_KEY
+    def definir(self, valores, cor=None):
+        self.valores = list(valores or [])
+        if cor is not None:
+            self.cor = cor
+        self._desenhar()
 
-    def _aviso(self, texto, cor=None):
-        self.ids.login_aviso.text = f"[color={cor or AMARELO}]{texto}[/color]"
-
-    def mudar_modo(self):
-        self.modo_criar = not self.modo_criar
-        self.ids.login_btn.text = "CRIAR CONTA" if self.modo_criar else "ENTRAR"
-        self.ids.login_modo.text = ("ja tenho conta? ENTRAR" if self.modo_criar
-                                    else "nao tem conta? CRIAR CONTA")
-        self.ids.conta_senha2.opacity = 1 if self.modo_criar else 0
-        self.ids.conta_senha2.disabled = not self.modo_criar
-        self.ids.conta_senha2.height = dp(56) if self.modo_criar else 0
-        self.ids.login_aviso.text = ""
-
-    def acao_principal(self):
-        if not self._ligada():
-            self._aviso("O login ainda nao foi ativado pelo dono do app.")
+    def _desenhar(self, *_):
+        self.canvas.clear()
+        if not self.valores:
             return
-        email = (self.ids.conta_email.text or "").strip()
-        senha = self.ids.conta_senha.text or ""
-        if "@" not in email or "." not in email.split("@")[-1]:
-            self._aviso("digite um email valido")
-            return
-        if len(senha) < 6:
-            self._aviso("a senha precisa de pelo menos 6 caracteres")
-            return
-        if self.modo_criar and senha != (self.ids.conta_senha2.text or ""):
-            self._aviso("as duas senhas precisam ser iguais")
-            return
-        if self._ocupado:
-            return
-        self._ocupado = True
-        self.ids.login_spinner.active = True
-        self._aviso("criando conta..." if self.modo_criar else "entrando...", VERDE)
-        threading.Thread(target=self._t_principal,
-                         args=(email, senha, self.modo_criar), daemon=True).start()
-
-    def _t_principal(self, email, senha, modo_criar):
-        if modo_criar:
-            js, erro = _fb_post(FB_SIGNUP + FIREBASE_KEY, {
-                "email": email, "password": senha, "returnSecureToken": True,
-            })
-            if js and js.get("idToken"):
-                _fb_post(FB_OOB + FIREBASE_KEY, {
-                    "requestType": "VERIFY_EMAIL", "idToken": js["idToken"],
-                })
-        else:
-            js, erro = _fb_post(FB_LOGIN + FIREBASE_KEY, {
-                "email": email, "password": senha, "returnSecureToken": True,
-            })
-        if js:
-            dados = {
-                "idToken": js.get("idToken") or "",
-                "refreshToken": js.get("refreshToken") or "",
-                "email": js.get("email") or email,
-                "uid": js.get("localId") or "",
-                "verificado": False,
-            }
-            js2, _ = _fb_post(FB_LOOKUP + FIREBASE_KEY, {"idToken": dados["idToken"]})
-            if js2 and js2.get("users"):
-                dados["verificado"] = bool(js2["users"][0].get("emailVerified"))
-            if dados["idToken"] and dados["refreshToken"]:
-                conta_salvar(dados)
-            else:
-                js = None
-                erro = "resposta inesperada do servidor de login"
-        Clock.schedule_once(lambda dt: self._mostrar(modo_criar, js, erro), 0)
-
-    def _mostrar(self, era_criar, js, erro):
-        self._ocupado = False
-        self.ids.login_spinner.active = False
-        if not js:
-            self._aviso(_fb_err(erro), VERMELHO)
-            return
-        if era_criar:
-            if self.modo_criar:
-                self.mudar_modo()
-            self._aviso(
-                "conta criada! Enviamos um link de confirmacao para seu email. "
-                "Confirme e toque em ENTRAR.", VERDE)
-            return
-        try:
-            MDApp.get_running_app().ir_principal()
-        except Exception:
-            pass
-
-    def esqueci_senha(self):
-        if not self._ligada():
-            self._aviso("O login ainda nao foi ativado pelo dono do app.")
-            return
-        email = (self.ids.conta_email.text or "").strip()
-        if "@" not in email:
-            self._aviso("digite seu email no campo de cima primeiro")
-            return
-        if self._ocupado:
-            return
-        self._ocupado = True
-        self.ids.login_spinner.active = True
-        threading.Thread(target=self._t_esqueci, args=(email,), daemon=True).start()
-
-    def _t_esqueci(self, email):
-        js, erro = _fb_post(FB_OOB + FIREBASE_KEY, {
-            "requestType": "PASSWORD_RESET", "email": email,
-        })
-        Clock.schedule_once(lambda dt: self._mostrar_esqueci(js, erro), 0)
-
-    def _mostrar_esqueci(self, js, erro):
-        self._ocupado = False
-        self.ids.login_spinner.active = False
-        if js:
-            self._aviso("se esse email tiver conta, mandamos um link para trocar "
-                        "a senha. Olhe a caixa de entrada (e o spam).", VERDE)
-        else:
-            self._aviso(_fb_err(erro), VERMELHO)
-
-    def entrar_google(self):
-        if not self._ligada():
-            self._aviso("O login ainda nao foi ativado pelo dono do app.")
-            return
-        if not _google_ligado():
-            self._aviso("A entrada com Google sera ligada em breve; "
-                        "por enquanto use o email e a senha.")
-            return
-        if self._ocupado:
-            return
-        self._ocupado = True
-        self.ids.login_spinner.active = True
-        self._aviso("abrindo o Google no navegador... faca o login e volte para o app", VERDE)
-        threading.Thread(target=self._t_google, daemon=True).start()
-
-    def _t_google(self):
-        dados, erro = google_login_flow()
-        if dados:
-            conta_salvar(dados)
-        Clock.schedule_once(lambda dt: self._mostrar_google(dados, erro), 0)
-
-    def _mostrar_google(self, dados, erro):
-        self._ocupado = False
-        self.ids.login_spinner.active = False
-        if dados:
-            try:
-                MDApp.get_running_app().ir_principal()
-            except Exception:
-                pass
-            return
-        if erro == "NAO_ABRIU_NAVEGADOR":
-            self._aviso("nao consegui abrir o navegador neste aparelho", VERMELHO)
-        else:
-            self._aviso(_limpa(erro), VERMELHO)
+        maximo = max(self.valores) or 1
+        quantidade = len(self.valores)
+        espaco = dp(2)
+        largura = max(dp(2), (self.width - espaco * (quantidade + 1)) / quantidade)
+        altura_util = max(dp(10), self.height - dp(6))
+        with self.canvas:
+            Color(0.12, 0.17, 0.24, 1)
+            Rectangle(pos=(self.x, self.y), size=(self.width, dp(1)))
+            Color(*self.cor)
+            for indice, valor in enumerate(self.valores):
+                altura = max(dp(2), (float(valor or 0) / maximo) * altura_util)
+                x = self.x + espaco + indice * (largura + espaco)
+                Rectangle(pos=(x, self.y), size=(largura, altura))
 
 
-class MainScreen(MDScreen):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.cliente = ClienteIMVU()
-        self._monitor_event = None
-        self._ocupado = False
-        self._update_url = None
-        self._manual_update = False
-        self._presente_ocupado = False
-        self._email_completo = ""
-        self._email_visivel = False
-
-    def on_enter(self, *args):
-        self._atualizar_conta_app()
-
-    def _atualizar_conta_app(self):
-        try:
-            dados = conta_carregar()
-        except Exception:
-            dados = {}
-        self._email_completo = dados.get("email") or ""
-        self._email_visivel = False
-        if self._email_completo:
-            if dados.get("verificado"):
-                self.ids.conta_status.text = f"[color={VERDE}]conta confirmada[/color]"
-            else:
-                self.ids.conta_status.text = (
-                    f"[color={AMARELO}]falta confirmar o email - veja a caixa de entrada e o spam[/color]"
-                )
-        else:
-            self.ids.conta_status.text = (
-                f"[color={AMARELO}]sem conta - o resgate fica bloqueado[/color]"
-            )
-        self.ids.conta_email.text = _email_mascarado(self._email_completo) or "sem email cadastrado"
-        self.ids.btn_ver_email.icon = "eye"
-
-    def alternar_email(self):
-        email = getattr(self, "_email_completo", "")
-        if not email:
-            return
-        self._email_visivel = not getattr(self, "_email_visivel", False)
-        self.ids.conta_email.text = email if self._email_visivel else _email_mascarado(email)
-        self.ids.btn_ver_email.icon = "eye-off" if self._email_visivel else "eye"
-
-    def sair_conta_app(self):
-        conta_limpar()
-        try:
-            MDApp.get_running_app().ir_login()
-        except Exception:
-            pass
-
-    def checar_nick(self):
-        nick = (self.ids.nick_field.text or "").strip()
-        if not nick:
-            self.ids.resultado.text = f"[color={AMARELO}]Digite um nick primeiro.[/color]"
-            return
-        if self._ocupado:
-            return
-        self._ocupado = True
-        self.ids.spinner.active = True
-        self.ids.resultado.text = "Consultando..."
-        threading.Thread(target=self._t_checar, args=(nick,), daemon=True).start()
-
-    def _t_checar(self, nick):
-        try:
-            res = self.cliente.checar(nick)
-            erro = None
-        except Exception as e:
-            res, erro = None, str(e)
-        if res:
-            res["img_local"] = self._obter_imagem(res)
-        Clock.schedule_once(lambda dt: self._mostrar_checagem(res, erro), 0)
-
-    def _obter_imagem(self, res):
-        candidatos = []
-        if self.cliente.logado:
-            if res.get("imagem_3d"):
-                candidatos.append(res["imagem_3d"])
-            if res.get("retrato_3d"):
-                candidatos.append(res["retrato_3d"])
-        if res.get("foto_perfil"):
-            candidatos.append(res["foto_perfil"])
-        base = None
-        try:
-            base = MDApp.get_running_app().user_data_dir
-        except Exception:
-            base = None
-        for url in candidatos:
-            dados = self.cliente.baixar_imagem(url)
-            if not dados:
-                continue
-            if not base:
-                return None
-            nome = "avatar_%s_%s.png" % (res.get("cid", "x"),
-                                         hashlib.md5(url.encode("utf-8")).hexdigest()[:10])
-            caminho = os.path.join(base, nome)
-            try:
-                with open(caminho, "wb") as f:
-                    f.write(dados)
-                return caminho
-            except Exception:
-                continue
-        return None
-
-    def _mostrar_imagem(self, caminho):
-        img = self.ids.foto_avatar
-        if caminho:
-            img.source = caminho
-            img.height = dp(220)
-            img.opacity = 1
-            try:
-                img.reload()
-            except Exception:
-                pass
-        else:
-            img.source = ""
-            img.height = 0
-            img.opacity = 0
-
-    def _mostrar_checagem(self, res, erro):
-        self._ocupado = False
-        self.ids.spinner.active = False
-        self._mostrar_imagem(res.get("img_local") if res else None)
-        if erro:
-            self.ids.resultado.text = f"[color={VERMELHO}]Erro: {_limpa(erro)}[/color]"
-        elif res is None:
-            self.ids.resultado.text = f"[color={AMARELO}]Nao encontrado no IMVU.[/color]"
-        else:
-            self.ids.resultado.text = fmt_checagem(res)
-
-    def toggle_monitor(self):
-        if self._monitor_event is not None:
-            self._monitor_event.cancel()
-            self._monitor_event = None
-            self.ids.btn_monitor.text = "MONITORAR"
-            return
-        nick = (self.ids.nick_field.text or "").strip()
-        if not nick:
-            self.ids.resultado.text = f"[color={AMARELO}]Digite um nick para monitorar.[/color]"
-            return
-        try:
-            intervalo = float((self.ids.intervalo_field.text or "30").replace(",", "."))
-        except ValueError:
-            intervalo = 30.0
-        intervalo = min(600.0, max(15.0, intervalo))
-        self.ids.btn_monitor.text = "PARAR"
-        self.checar_nick()
-        self._monitor_event = Clock.schedule_interval(lambda dt: self.checar_nick(), intervalo)
-
-    def buscar_sala(self):
-        rid = (self.ids.sala_field.text or "").strip()
-        if not rid:
-            self.ids.sala_result.text = f"[color={AMARELO}]Cole o ID da sala (ex: 12345678-1).[/color]"
-            return
-        self.ids.sala_result.text = "Buscando..."
-        threading.Thread(target=self._t_sala, args=(rid,), daemon=True).start()
-
-    def _t_sala(self, rid):
-        try:
-            info = self.cliente.buscar_sala(rid)
-            erro = None
-        except Exception as e:
-            info, erro = None, str(e)
-        Clock.schedule_once(lambda dt: self._mostrar_sala(info, erro), 0)
-
-    def _mostrar_sala(self, info, erro):
-        if erro:
-            self.ids.sala_result.text = f"[color={VERMELHO}]Erro: {_limpa(erro)}[/color]"
-        else:
-            self.ids.sala_result.text = fmt_sala(info)
-
-    def fazer_login(self):
-        usuario = (self.ids.login_user.text or "").strip()
-        senha = self.ids.login_pass.text or ""
-        codigo = (self.ids.login_code.text or "").strip()
-        if not usuario or not senha:
-            self.ids.conta_result.text = f"[color={AMARELO}]Preencha usuario e senha.[/color]"
-            return
-        self.ids.conta_result.text = "Entrando..."
-        threading.Thread(target=self._t_login, args=(usuario, senha, codigo), daemon=True).start()
-
-    def _t_login(self, usuario, senha, codigo):
-        try:
-            ok, msg = self.cliente.login(usuario, senha, codigo)
-        except Exception as e:
-            ok, msg = False, f"falha: {e}"
-        Clock.schedule_once(lambda dt: self._mostrar_login(ok, msg), 0)
-
-    def _mostrar_login(self, ok, msg):
-        if ok:
-            self.ids.conta_result.text = f"[color={VERDE}]{_limpa(msg)}[/color]"
-        elif str(msg).startswith("2FA"):
-            self.ids.conta_result.text = (
-                f"[color={AMARELO}]O IMVU pediu codigo de verificacao. "
-                "Preencha o campo 2FA e toque em ENTRAR de novo.[/color]"
-            )
-        else:
-            self.ids.conta_result.text = f"[color={VERMELHO}]{_limpa(msg)}[/color]"
-
-    def sair_conta(self):
-        self.cliente = ClienteIMVU()
-        self.ids.conta_result.text = "sessao: anonimo"
-
-    def verificar_presente(self):
-        if "SEU-BACKEND-AQUI" in PRESENTE_URL:
-            self.ids.presente_result.text = (
-                f"[color={AMARELO}]O servidor do presente ainda nao foi configurado "
-                "pelo dono do app.[/color]"
-            )
-            return
-        nick = (self.ids.presente_nick.text or "").strip()
-        if not nick:
-            self.ids.presente_result.text = f"[color={AMARELO}]Digite o nick primeiro.[/color]"
-            return
-        if self._presente_ocupado:
-            return
-        self._presente_ocupado = True
-        self.ids.presente_spinner.active = True
-        self.ids.presente_result.text = "Consultando nick e wishlist..."
-        threading.Thread(target=self._t_verificar, args=(nick,), daemon=True).start()
-
-    def _t_verificar(self, nick):
-        dados = conta_ativa()
-        try:
-            url = PRESENTE_URL.rstrip("/") + "/checar?" + urllib.parse.urlencode({"nick": nick})
-            cabecalho = {"User-Agent": UA}
-            if dados:
-                cabecalho["X-Conta-Token"] = dados["idToken"]
-            req = urllib.request.Request(url, headers=cabecalho)
-            with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
-                js = json.loads(resp.read().decode("utf-8", errors="replace"))
-            erro = None
-        except urllib.error.HTTPError as e:
-            try:
-                js = json.loads(e.read().decode("utf-8", errors="replace"))
-            except Exception:
-                js = {}
-            erro = (js or {}).get("erro") or f"HTTP {e.code}"
-        except Exception as e:
-            js, erro = None, f"falha de rede: {e}"
-        Clock.schedule_once(lambda dt: self._mostrar_verificar(js, erro), 0)
-
-    def _mostrar_verificar(self, js, erro):
-        self._presente_ocupado = False
-        self.ids.presente_spinner.active = False
-        if erro:
-            self.ids.presente_result.text = f"[color={VERMELHO}]{_limpa(erro)}[/color]"
-            return
-        linhas = [f"[b]{_limpa(js.get('nick'))}[/b]  (user-{_limpa(js.get('cid'))})"]
-        if js.get("ja_recebeu"):
-            quando = str(js.get("quando") or "")[:16].replace("T", " ")
-            volta = _limpa(js.get("volta_em") or "")
-            extra = f" Pode receber de novo {volta}." if volta else " Pode receber de novo depois de 24h."
-            linhas.append(
-                f"[color={AMARELO}]Esse avatar ja recebeu os 100 creditos"
-                + (f" ({quando})" if quando else "") + "." + extra + "[/color]"
-            )
-        elif js.get("apto") is False:
-            motivo = _limpa(js.get("motivo") or "conta nao elegivel")
-            linhas.append(f"[color={VERMELHO}]Nao pode receber agora: {motivo}.[/color]")
-        else:
-            linhas.append(f"[color={VERDE}]Pode resgatar 100 creditos agora![/color]")
-        wishlist = js.get("wishlist") or {}
-        if wishlist.get("disponivel"):
-            itens = wishlist.get("itens") or []
-            nomes = []
-            for item in itens:
-                nome = _limpa(item.get("nome") or "item")
-                preco = item.get("preco")
-                nomes.append(f"{nome} ({preco} cr)" if preco else nome)
-            linhas.append(
-                f"Wishlist ({wishlist.get('total', len(itens))} itens): "
-                + (", ".join(nomes) if nomes else "vazia")
-            )
-        else:
-            linhas.append("[i]Wishlist: indisponivel agora.[/i]")
-        if js.get("restantes_hoje") is not None:
-            linhas.append(f"[i]Envios restantes hoje: {js.get('restantes_hoje')}[/i]")
-        self.ids.presente_result.text = "\n".join(linhas)
-
-    def pegar_presente(self):
-        if "SEU-BACKEND-AQUI" in PRESENTE_URL:
-            self.ids.presente_result.text = (
-                f"[color={AMARELO}]O servidor do presente ainda nao foi configurado "
-                "pelo dono do app.[/color]"
-            )
-            return
-        nick = (self.ids.presente_nick.text or "").strip()
-        if not nick:
-            self.ids.presente_result.text = f"[color={AMARELO}]Digite seu nick primeiro.[/color]"
-            return
-        if not self.ids.presente_confirmo.active:
-            self.ids.presente_result.text = (
-                f"[color={AMARELO}]Marque a caixinha confirmando que o nick e a sua "
-                "conta no IMVU antes de resgatar.[/color]"
-            )
-            return
-        if self._presente_ocupado:
-            return
-        self._presente_ocupado = True
-        self.ids.presente_spinner.active = True
-        self.ids.presente_result.text = "Enviando 100 creditos..."
-        mensagem = (self.ids.presente_msg.text or "").strip()
-        threading.Thread(target=self._t_presente, args=(nick, mensagem), daemon=True).start()
-
-    def _t_presente(self, nick, mensagem):
-        dados = conta_ativa()
-        if not dados:
-            Clock.schedule_once(lambda dt: self._mostrar_presente(
-                None, "entre na sua conta do app primeiro (aba CONTA)"), 0)
-            return
-        try:
-            corpo = json.dumps({
-                "nick": nick,
-                "mensagem": mensagem,
-                "aparelho": _id_aparelho(),
-                "token": dados["idToken"],
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                PRESENTE_URL.rstrip("/") + "/gift",
-                data=corpo,
-                headers={"User-Agent": UA, "Content-Type": "application/json; charset=utf-8"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=40, context=_SSL_CTX) as resp:
-                js = json.loads(resp.read().decode("utf-8", errors="replace"))
-            erro = None
-        except urllib.error.HTTPError as e:
-            try:
-                js = json.loads(e.read().decode("utf-8", errors="replace"))
-            except Exception:
-                js = {}
-            erro = (js or {}).get("erro") or f"HTTP {e.code}"
-        except Exception as e:
-            js, erro = None, f"falha de rede: {e}"
-        Clock.schedule_once(lambda dt: self._mostrar_presente(js, erro), 0)
-
-    def _mostrar_presente(self, js, erro):
-        self._presente_ocupado = False
-        self.ids.presente_spinner.active = False
-        if erro:
-            self.ids.presente_result.text = f"[color={VERMELHO}]{_limpa(erro)}[/color]"
-        elif js and js.get("ok"):
-            self.ids.presente_result.text = (
-                f"[color={VERDE}][b]100 creditos enviados![/b][/color]\n"
-                "Confira sua carteira (Wallet) no IMVU. Aproveite!"
-            )
-        else:
-            self.ids.presente_result.text = (
-                f"[color={AMARELO}]Nao deu agora. Tente de novo mais tarde.[/color]"
-            )
-
-    def verificar_update(self, manual=False):
-        self._manual_update = bool(manual)
-        self.ids.update_titulo.text = "Verificando..."
-        self.ids.update_notas.text = ""
-        threading.Thread(target=self._t_update, daemon=True).start()
-
-    def _t_update(self):
-        try:
-            req = urllib.request.Request(
-                RELEASES_API,
-                headers={"User-Agent": UA, "Accept": "application/vnd.github+json"},
-            )
-            with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as resp:
-                js = json.loads(resp.read().decode("utf-8", errors="replace"))
-            erro = None
-        except Exception as e:
-            js, erro = None, str(e)
-        Clock.schedule_once(lambda dt: self._mostrar_update(js, erro), 0)
-
-    def _mostrar_update(self, js, erro):
-        if erro or not isinstance(js, dict):
-            if self._manual_update:
-                self.ids.update_titulo.text = (
-                    f"[color={VERMELHO}]Nao foi possivel verificar agora: "
-                    f"{_limpa(str(erro))[:120]}[/color]"
-                )
-            else:
-                self.ids.update_titulo.text = (
-                    "Toque em VERIFICAR ATUALIZACAO para ver se ha versao nova."
-                )
-            return
-        tag = str(js.get("tag_name") or "").strip() or f"v{APP_VERSAO}"
-        novo = _versao_tupla(tag) > _versao_tupla(APP_VERSAO)
-        self._update_url = None
-        for a in js.get("assets") or []:
-            u = str(a.get("browser_download_url") or "")
-            if u.lower().endswith(".apk"):
-                self._update_url = u
-        if novo:
-            self.ids.update_titulo.text = (
-                f"[color={AMARELO}][b]Atualizacao disponivel: {_limpa(tag)}[/b][/color]  "
-                f"(instalada: v{APP_VERSAO})"
-            )
-            self.ids.update_notas.text = (js.get("body") or "").strip() or "Sem notas nesta versao."
-            self.ids.btn_baixar.opacity = 1
-            self.ids.btn_baixar.disabled = not bool(self._update_url)
-        else:
-            self.ids.update_titulo.text = (
-                f"[color={VERDE}]Voce esta na versao mais recente (v{APP_VERSAO}).[/color]"
-            )
-            self.ids.update_notas.text = ""
-            self.ids.btn_baixar.opacity = 0
-            self.ids.btn_baixar.disabled = True
-
-    def abrir_download(self):
-        if not self._update_url:
-            return
-        try:
-            from android import open_url
-            open_url(self._update_url)
-            return
-        except Exception:
-            pass
-        try:
-            webbrowser.open(self._update_url)
-        except Exception:
-            self.ids.update_notas.text = self._update_url
-
-
-class IMVUStatusApp(MDApp):
+class ImvuStatusApp(MDApp):
     def build(self):
         self.title = "IMVU Status"
         self.theme_cls.theme_style = "Dark"
         self.theme_cls.primary_palette = "Teal"
         self.theme_cls.accent_palette = "Cyan"
-        Builder.load_string(KV)
-        from kivy.uix.screenmanager import ScreenManager
-        self.sm = ScreenManager()
-        self.sm.add_widget(LoginScreen(name="login"))
-        self.sm.add_widget(MainScreen(name="principal"))
-        return self.sm
+        Window.clearcolor = FUNDO
 
-    def ir_principal(self):
+        self.caminho_config = os.path.join(self.user_data_dir, NOME_ARQUIVO)
+        self.config = self._ler_config()
+        if not self.config.get("device"):
+            self.config["device"] = secrets.token_hex(16)
+        self.device = self.config["device"]
+        self.api = Api(self.config.get("api") or DEFAULT_API)
+        self.nick = None
+        self.status = None
+        self.watch = []
+        self.alertas = []
+        self.live = None
+
+        self._salvar_config()
+
+        raiz = MDBoxLayout(orientation="vertical")
+        self.topbar = MDTopAppBar(
+            title="IMVU Status",
+            elevation=2,
+            md_bg_color=FUNDO,
+            right_action_items=[
+                ["refresh", lambda _x: self.atualizar_tudo()],
+                ["cog", lambda _x: self.abrir_config()],
+            ],
+        )
+        self.sm = ScreenManager(transition=NoTransition())
+        principal = MDScreen(name="principal")
+        self.nav = MDBottomNavigation(panel_color=FUNDO)
+        self.item_inicio = MDBottomNavigationItem(name="inicio", text="Inicio", icon="home")
+        self.item_salas = MDBottomNavigationItem(name="salas", text="Salas", icon="magnify")
+        self.item_historico = MDBottomNavigationItem(name="historico", text="Historico", icon="chart-bar")
+        self.item_alertas = MDBottomNavigationItem(name="alertas", text="Alertas", icon="bell")
+        self.item_inicio.add_widget(self._tela_inicio())
+        self.item_salas.add_widget(self._tela_salas())
+        self.item_historico.add_widget(self._tela_historico())
+        self.item_alertas.add_widget(self._tela_alertas())
+        for item in (self.item_inicio, self.item_salas, self.item_historico, self.item_alertas):
+            self.nav.add_widget(item)
+        principal.add_widget(self.nav)
+        self.sm.add_widget(principal)
+        self.sm.add_widget(self._tela_config())
+        raiz.add_widget(self.topbar)
+        raiz.add_widget(self.sm)
+        return raiz
+
+    @property
+    def watched(self):
+        return {str(item.get("nick", "")).lower() for item in self.watch}
+
+    def _ler_config(self):
         try:
-            self.sm.current = "principal"
+            with open(self.caminho_config, "r", encoding="utf-8") as arquivo:
+                dados = json.load(arquivo)
+            return dados if isinstance(dados, dict) else {}
+        except Exception:
+            return {}
+
+    def _salvar_config(self):
+        try:
+            os.makedirs(self.user_data_dir, exist_ok=True)
+            with open(self.caminho_config, "w", encoding="utf-8") as arquivo:
+                json.dump(self.config, arquivo, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
-    def ir_login(self):
+    def paragrafo(self, texto="", cor=TEXTO, tamanho=None, markup=False, negrito=False):
+        rotulo = MDLabel(text=texto, markup=markup, size_hint_y=None, height=dp(20))
+        rotulo.theme_text_color = "Custom"
+        rotulo.text_color = cor
+        if tamanho:
+            rotulo.font_size = tamanho
+        if negrito:
+            rotulo.bold = True
+        rotulo.bind(width=lambda inst, largura: setattr(inst, "text_size", (largura, None)))
+        rotulo.bind(texture_size=lambda inst, tamanho_texto: setattr(inst, "height", tamanho_texto[1] + dp(2)))
+        return rotulo
+
+    def titulo(self, texto):
+        rotulo = self.paragrafo(texto, cor=TEXTO, tamanho="18sp", negrito=True)
+        return rotulo
+
+    def novo_cartao(self, clicavel=False, **extra):
+        opcoes = dict(
+            orientation="vertical",
+            padding=dp(14),
+            spacing=dp(8),
+            size_hint_y=None,
+            radius=[dp(14)],
+            elevation=0,
+            md_bg_color=CARTAO,
+        )
+        opcoes.update(extra)
+        classe = CartaoClicavel if clicavel else MDCard
+        cartao = classe(**opcoes)
+        cartao.bind(minimum_height=cartao.setter("height"))
+        return cartao
+
+    def novo_conteudo(self):
+        rolagem = ScrollView(do_scroll_x=False, bar_width=dp(2))
+        caixa = MDBoxLayout(orientation="vertical", size_hint_y=None, padding=dp(14), spacing=dp(12))
+        caixa.bind(minimum_height=caixa.setter("height"))
+        rolagem.add_widget(caixa)
+        return rolagem, caixa
+
+    def botao(self, texto, acao, levantado=False, largura=None, icone=None):
+        classe = MDRaisedButton if levantado else MDFlatButton
+        opcoes = dict(text=texto, size_hint=(None, None), height=dp(42))
+        if icone:
+            opcoes["icon"] = icone
+        if largura:
+            opcoes["width"] = dp(largura)
+        botao = classe(**opcoes)
+        botao.bind(on_release=lambda _inst: acao())
+        return botao
+
+    def aviso(self, texto, erro=False):
+        mensagem = str(texto)
         try:
-            self.sm.current = "login"
+            Snackbar(text=mensagem, duration=3).open()
         except Exception:
-            pass
+            print(mensagem)
+
+    def em_segundo_plano(self, funcao, ao_concluir, ao_falhar=None):
+        def executar():
+            try:
+                resultado = funcao()
+            except Exception as exc:
+                mensagem = str(exc) or "falha inesperada"
+                if ao_falhar is not None:
+                    Clock.schedule_once(lambda dt, m=mensagem: ao_falhar(m), 0)
+                else:
+                    Clock.schedule_once(lambda dt, m=mensagem: self.aviso(m, True), 0)
+            else:
+                Clock.schedule_once(lambda dt, r=resultado: ao_concluir(r), 0)
+
+        threading.Thread(target=executar, daemon=True).start()
+
+    def _tela_inicio(self):
+        rolagem, caixa = self.novo_conteudo()
+
+        cartao_busca = self.novo_cartao()
+        cartao_busca.add_widget(self.titulo("Consultar avatar"))
+        cartao_busca.add_widget(
+            self.paragrafo(
+                "Status publico em tempo real, sala exposta, previsao de horarios e acompanhamento.",
+                cor=MUTED,
+            )
+        )
+        linha = MDBoxLayout(
+            orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(54)
+        )
+        self.campo_nick = MDTextField(
+            hint_text="nick do IMVU",
+            mode="rectangle",
+            size_hint_x=1,
+            size_hint_y=None,
+            height=dp(48),
+            on_text_validate=lambda _inst: self.consultar_nick(),
+        )
+        linha.add_widget(self.campo_nick)
+        linha.add_widget(self.botao("Consultar", self.consultar_nick, levantado=True, largura=110))
+        cartao_busca.add_widget(linha)
+        caixa.add_widget(cartao_busca)
+
+        self.card_status = self.novo_cartao()
+        topo = MDBoxLayout(orientation="horizontal", spacing=dp(12), size_hint_y=None)
+        self.img_status = Image(
+            source="assets/icon.png",
+            size_hint=(None, None),
+            size=(dp(84), dp(84)),
+            fit_mode="cover",
+        )
+        info = MDBoxLayout(orientation="vertical", spacing=dp(3), size_hint_y=None)
+        info.bind(minimum_height=info.setter("height"))
+        self.lbl_status_nome = self.paragrafo("Nenhum avatar consultado", cor=TEXTO, tamanho="17sp", negrito=True)
+        self.lbl_status_nick = self.paragrafo("", cor=MUTED)
+        self.lbl_status_estado = self.paragrafo("", cor=MUTED, tamanho="13sp", negrito=True)
+        info.add_widget(self.lbl_status_nome)
+        info.add_widget(self.lbl_status_nick)
+        info.add_widget(self.lbl_status_estado)
+        topo.add_widget(self.img_status)
+        topo.add_widget(info)
+        topo.bind(minimum_height=topo.setter("height"))
+        self.card_status.add_widget(topo)
+        self.lbl_status_sala = self.paragrafo("", cor=TEXTO)
+        self.lbl_status_detalhe = self.paragrafo("", cor=MUTED)
+        self.lbl_status_previsao = self.paragrafo("", cor=ACCENT)
+        self.card_status.add_widget(self.lbl_status_sala)
+        self.card_status.add_widget(self.lbl_status_detalhe)
+        self.card_status.add_widget(self.lbl_status_previsao)
+        botoes = MDBoxLayout(orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(44))
+        self.btn_historico = self.botao("Ver historico", self.ir_para_historico)
+        self.btn_watch = self.botao("Acompanhar", self.alternar_watch, levantado=True)
+        botoes.add_widget(self.btn_historico)
+        botoes.add_widget(self.btn_watch)
+        self.card_status.add_widget(botoes)
+        caixa.add_widget(self.card_status)
+
+        card_feed = self.novo_cartao()
+        card_feed.add_widget(self.titulo("Ao vivo"))
+        card_feed.add_widget(
+            self.paragrafo("Eventos recebidos do observatorio em tempo real.", cor=MUTED)
+        )
+        self.caixa_feed = MDBoxLayout(orientation="vertical", spacing=dp(4), size_hint_y=None)
+        self.caixa_feed.bind(minimum_height=self.caixa_feed.setter("height"))
+        self.caixa_feed.add_widget(self.paragrafo("Aguardando eventos...", cor=MUTED_ESCURO))
+        card_feed.add_widget(self.caixa_feed)
+        caixa.add_widget(card_feed)
+
+        return rolagem
+
+    def _tela_salas(self):
+        rolagem, caixa = self.novo_conteudo()
+
+        card_topo = self.novo_cartao()
+        card_topo.add_widget(self.titulo("Salas publicas"))
+        card_topo.add_widget(
+            self.paragrafo("Ranking por ocupacao media nas ultimas 24 horas.", cor=MUTED)
+        )
+        card_topo.add_widget(
+            self.botao("Atualizar ranking", self.carregar_salas, levantado=True, largura=160)
+        )
+        caixa.add_widget(card_topo)
+
+        card_lista = self.novo_cartao()
+        self.lista_salas = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None)
+        self.lista_salas.bind(minimum_height=self.lista_salas.setter("height"))
+        self.lista_salas.add_widget(self.paragrafo("Carregando salas...", cor=MUTED_ESCURO))
+        card_lista.add_widget(self.lista_salas)
+        caixa.add_widget(card_lista)
+
+        card_consulta = self.novo_cartao()
+        card_consulta.add_widget(self.titulo("Consultar sala"))
+        linha = MDBoxLayout(orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(54))
+        self.campo_sala = MDTextField(
+            hint_text="ID da sala (ex: 12345678-1)",
+            mode="rectangle",
+            size_hint_x=1,
+            size_hint_y=None,
+            height=dp(48),
+            on_text_validate=lambda _inst: self.consultar_sala(),
+        )
+        linha.add_widget(self.campo_sala)
+        linha.add_widget(self.botao("Ver", self.consultar_sala, levantado=True, largura=70))
+        card_consulta.add_widget(linha)
+        self.lbl_sala_resumo = self.paragrafo("", cor=TEXTO)
+        self.lbl_sala_extra = self.paragrafo("", cor=MUTED)
+        card_consulta.add_widget(self.lbl_sala_resumo)
+        card_consulta.add_widget(self.lbl_sala_extra)
+        self.grafico_sala = GraficoBarras(size_hint_y=None, height=dp(110), cor=ACCENT)
+        card_consulta.add_widget(self.grafico_sala)
+        self.lbl_sala_amostras = self.paragrafo("", cor=MUTED_ESCURO)
+        card_consulta.add_widget(self.lbl_sala_amostras)
+        caixa.add_widget(card_consulta)
+
+        card_diretorio = self.novo_cartao()
+        card_diretorio.add_widget(self.titulo("Diretorio publico"))
+        linha = MDBoxLayout(orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(54))
+        self.campo_letra = MDTextField(
+            hint_text="letra inicial (A-Z ou 0-9)",
+            mode="rectangle",
+            size_hint_x=1,
+            size_hint_y=None,
+            height=dp(48),
+            on_text_validate=lambda _inst: self.carregar_diretorio(),
+        )
+        linha.add_widget(self.campo_letra)
+        linha.add_widget(self.botao("Buscar", self.carregar_diretorio, levantado=True, largura=90))
+        card_diretorio.add_widget(linha)
+        self.lista_diretorio = MDBoxLayout(orientation="vertical", spacing=dp(6), size_hint_y=None)
+        self.lista_diretorio.bind(minimum_height=self.lista_diretorio.setter("height"))
+        card_diretorio.add_widget(self.lista_diretorio)
+        caixa.add_widget(card_diretorio)
+
+        return rolagem
+
+    def _tela_historico(self):
+        rolagem, caixa = self.novo_conteudo()
+
+        self.lbl_hist_nome = self.titulo("Historico do avatar")
+        caixa.add_widget(self.lbl_hist_nome)
+
+        card_resumo = self.novo_cartao()
+        card_resumo.add_widget(self.titulo("Resumo"))
+        self.lbl_hist_resumo = self.paragrafo(
+            "Consulte um nick na aba Inicio para carregar o historico.", cor=MUTED
+        )
+        card_resumo.add_widget(self.lbl_hist_resumo)
+        caixa.add_widget(card_resumo)
+
+        card_dias = self.novo_cartao()
+        card_dias.add_widget(self.titulo("Presenca por dia"))
+        self.lbl_dias_periodo = self.paragrafo("", cor=MUTED)
+        card_dias.add_widget(self.lbl_dias_periodo)
+        self.grafico_dias = GraficoBarras(size_hint_y=None, height=dp(120), cor=ACCENT)
+        card_dias.add_widget(self.grafico_dias)
+        caixa.add_widget(card_dias)
+
+        card_horas = self.novo_cartao()
+        card_horas.add_widget(self.titulo("Atividade por hora"))
+        self.grafico_horas = GraficoBarras(size_hint_y=None, height=dp(100), cor=(0.22, 0.72, 0.97, 1))
+        card_horas.add_widget(self.grafico_horas)
+        self.lbl_previsao_hist = self.paragrafo("", cor=ACCENT)
+        card_horas.add_widget(self.lbl_previsao_hist)
+        caixa.add_widget(card_horas)
+
+        card_tempo = self.novo_cartao()
+        card_tempo.add_widget(self.titulo("Linha do tempo"))
+        self.lista_timeline = MDBoxLayout(orientation="vertical", spacing=dp(4), size_hint_y=None)
+        self.lista_timeline.bind(minimum_height=self.lista_timeline.setter("height"))
+        self.lista_timeline.add_widget(self.paragrafo("Sem eventos.", cor=MUTED_ESCURO))
+        card_tempo.add_widget(self.lista_timeline)
+        caixa.add_widget(card_tempo)
+
+        card_looks = self.novo_cartao()
+        card_looks.add_widget(self.titulo("Galeria de looks"))
+        self.caixa_looks = MDBoxLayout(
+            orientation="horizontal", spacing=dp(8), size_hint=(None, None), height=dp(190)
+        )
+        self.caixa_looks.bind(minimum_width=self.caixa_looks.setter("width"))
+        rolagem_looks = ScrollView(do_scroll_y=False, size_hint_y=None, height=dp(190))
+        rolagem_looks.add_widget(self.caixa_looks)
+        self.rolagem_looks = rolagem_looks
+        card_looks.add_widget(rolagem_looks)
+        self.caixa_looks.add_widget(self.paragrafo("Sem looks registrados.", cor=MUTED_ESCURO))
+        caixa.add_widget(card_looks)
+
+        card_botao = self.novo_cartao()
+        card_botao.add_widget(
+            self.botao("Atualizar historico", self.recarregar_historico, levantado=True, largura=180)
+        )
+        caixa.add_widget(card_botao)
+
+        return rolagem
+
+    def _tela_alertas(self):
+        rolagem, caixa = self.novo_conteudo()
+
+        card_watch = self.novo_cartao()
+        card_watch.add_widget(self.titulo("Minha lista"))
+        card_watch.add_widget(
+            self.paragrafo("Avatares acompanhados recebem alertas quando entram online.", cor=MUTED)
+        )
+        self.lista_watch = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None)
+        self.lista_watch.bind(minimum_height=self.lista_watch.setter("height"))
+        self.lista_watch.add_widget(self.paragrafo("Nenhum avatar na lista.", cor=MUTED_ESCURO))
+        card_watch.add_widget(self.lista_watch)
+        caixa.add_widget(card_watch)
+
+        card_alertas = self.novo_cartao()
+        linha = MDBoxLayout(orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(44))
+        linha.add_widget(self.titulo("Ultimos alertas"))
+        linha.add_widget(self.botao("Marcar vistos", self.marcar_vistos, largura=130))
+        card_alertas.add_widget(linha)
+        self.lista_alertas = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None)
+        self.lista_alertas.bind(minimum_height=self.lista_alertas.setter("height"))
+        self.lista_alertas.add_widget(self.paragrafo("Sem alertas.", cor=MUTED_ESCURO))
+        card_alertas.add_widget(self.lista_alertas)
+        caixa.add_widget(card_alertas)
+
+        card_botao = self.novo_cartao()
+        card_botao.add_widget(
+            self.botao("Atualizar alertas", self.carregar_alertas, levantado=True, largura=160)
+        )
+        caixa.add_widget(card_botao)
+
+        return rolagem
+
+    def _tela_config(self):
+        tela = MDScreen(name="config")
+        rolagem, caixa = self.novo_conteudo()
+
+        card_api = self.novo_cartao()
+        card_api.add_widget(self.titulo("Servidor"))
+        card_api.add_widget(
+            self.paragrafo("Endereco do backend que hospeda a API e o painel web.", cor=MUTED)
+        )
+        self.campo_api = MDTextField(
+            text=self.api.base,
+            hint_text="https://seu-servidor.onrender.com",
+            mode="rectangle",
+            size_hint_y=None,
+            height=dp(52),
+        )
+        card_api.add_widget(self.campo_api)
+        linha = MDBoxLayout(orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(44))
+        linha.add_widget(self.botao("Testar", self.testar_conexao, largura=90))
+        linha.add_widget(self.botao("Salvar", self.salvar_config, levantado=True, largura=90))
+        linha.add_widget(self.botao("Abrir painel", self.abrir_painel, largura=120))
+        card_api.add_widget(linha)
+        caixa.add_widget(card_api)
+
+        card_alertas = self.novo_cartao()
+        card_alertas.add_widget(self.titulo("Alertas"))
+        linha = MDBoxLayout(orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(40))
+        linha.add_widget(self.paragrafo("Notificacoes no aparelho", cor=TEXTO))
+        self.switch_notificacoes = MDSwitch()
+        self.switch_notificacoes.active = bool(self.config.get("notificacoes", True))
+        linha.add_widget(self.switch_notificacoes)
+        card_alertas.add_widget(linha)
+        card_alertas.add_widget(
+            self.paragrafo(
+                "Ao ativar, o app pede permissao do Android e mostra avisos locais quando um "
+                "avatar acompanhado entra online.",
+                cor=MUTED,
+            )
+        )
+        self.lbl_device = self.paragrafo("Aparelho: " + self.device, cor=MUTED_ESCURO)
+        card_alertas.add_widget(self.lbl_device)
+        caixa.add_widget(card_alertas)
+
+        card_sobre = self.novo_cartao()
+        card_sobre.add_widget(self.titulo("Sobre"))
+        card_sobre.add_widget(
+            self.paragrafo(
+                "IMVU Status " + APP_VERSAO + "\n"
+                "Observatorio de dados publicos: status, historico, previsao, salas e resumo.",
+                cor=MUTED,
+            )
+        )
+        card_sobre.add_widget(
+            self.paragrafo(
+                "Privacidade: somente informacoes publicas do IMVU, sem rastrear relacoes entre "
+                "pessoas. Respeite os termos do IMVU e a LGPD. Nao use para perseguir ou vigiar.",
+                cor=MUTED_ESCURO,
+            )
+        )
+        card_sobre.add_widget(
+            self.paragrafo(
+                "Este aplicativo nao e afiliado ao IMVU. IMVU e uma marca de seus respectivos donos.",
+                cor=MUTED_ESCURO,
+            )
+        )
+        caixa.add_widget(card_sobre)
+
+        tela.add_widget(rolagem)
+        return tela
 
     def on_start(self):
-        try:
-            from kivy.core.window import Window
-            Window.softinput_mode = "below_target"
-        except Exception:
-            pass
-        try:
-            principal = self.root.get_screen("principal")
-            principal.ids.app_versao.text = f"Versao instalada: [b]v{APP_VERSAO}[/b]"
-            Clock.schedule_once(lambda dt: principal.verificar_update(False), 3)
-        except Exception:
-            pass
-        threading.Thread(target=self._t_auto_login, daemon=True).start()
+        self._pedir_permissoes()
+        self.iniciar_live()
+        Clock.schedule_once(lambda _dt: self.carregar_inicial(), 0.4)
 
-    def _t_auto_login(self):
-        dados = conta_ativa()
-        if dados:
-            Clock.schedule_once(lambda dt: self.ir_principal(), 0)
-        elif conta_carregar().get("refreshToken"):
-            Clock.schedule_once(lambda dt: self._aviso_login(
-                "nao deu para renovar o login agora; toque em ENTRAR. "
-                "(se persistir, saia e entre de novo)"), 0)
+    def on_stop(self):
+        if self.live is not None:
+            self.live.parar()
 
-    def _aviso_login(self, texto):
+    def _pedir_permissoes(self):
         try:
-            self.root.get_screen("login")._aviso(texto)
+            from android.permissions import Permission, request_permissions
+
+            permissoes = [Permission.INTERNET]
+            notificacao = getattr(Permission, "POST_NOTIFICATIONS", None)
+            if notificacao:
+                permissoes.append(notificacao)
+            request_permissions(permissoes)
         except Exception:
             pass
+
+    def iniciar_live(self):
+        if self.live is not None:
+            self.live.parar()
+        self.live = Live(self.api, self.device, self.ao_evento)
+        self.live.start()
+
+    def carregar_inicial(self):
+        self.carregar_salas(silencioso=True)
+        self.carregar_watch(silencioso=True)
+        self.carregar_alertas(silencioso=True)
+        ultimo = self.config.get("ultimo_nick")
+        if ultimo:
+            self.campo_nick.text = ultimo
+            self.consultar_nick(silencioso=True)
+
+    def consultar_nick(self, silencioso=False):
+        nick = (self.campo_nick.text or "").strip()
+        if not nick:
+            self.aviso("Digite um nick.", True)
+            return
+        if not silencioso:
+            self.aviso("Consultando " + nick + "...")
+        falha = (lambda _m: None) if silencioso else None
+        self.em_segundo_plano(
+            lambda: self.api.status(nick),
+            lambda dados: self.exibir_status(dados, nick),
+            falha,
+        )
+
+    def exibir_status(self, dados, nick_consultado):
+        nick = dados.get("nick") or nick_consultado
+        self.nick = nick
+        self.status = dados
+        self.campo_nick.text = nick
+        self.lbl_status_nome.text = dados.get("display_name") or nick
+        self.lbl_status_nick.text = "@" + nick + "  -  CID " + str(dados.get("cid") or "?")
+        online = bool(dados.get("online"))
+        self.lbl_status_estado.text = "ONLINE" if online else "OFFLINE"
+        self.lbl_status_estado.text_color = OK if online else ERRO
+        sala = dados.get("sala") or {}
+        if sala.get("nome"):
+            self.lbl_status_sala.text = "Sala: " + str(sala.get("nome")) + " (" + str(sala.get("privacidade") or "?") + ")"
+        else:
+            self.lbl_status_sala.text = "Sala: nao exposta agora"
+        if dados.get("aparente_offline"):
+            self.lbl_status_sala.text += "  -  possivel modo offline"
+        self.lbl_status_detalhe.text = (
+            "Pais: " + str(dados.get("pais") or "?")
+            + "  -  Seguidores: " + str(dados.get("seguidores") if dados.get("seguidores") is not None else "?")
+            + "  -  Visto: " + formatar_data(dados.get("ultima_vez") or dados.get("atualizado_em"))
+        )
+        previsao = dados.get("previsao") or {}
+        if previsao.get("proxima"):
+            self.lbl_status_previsao.text = formatar_previsao(previsao)
+        elif previsao.get("aviso"):
+            self.lbl_status_previsao.text = str(previsao.get("aviso"))
+        else:
+            self.lbl_status_previsao.text = "Historico ainda sendo formado."
+        imagem = dados.get("foto_perfil") or dados.get("avatar_3d")
+        self.img_status.source = imagem or "assets/icon.png"
+        self.config["ultimo_nick"] = nick
+        self._salvar_config()
+        self.atualizar_botao_watch()
+        self.em_segundo_plano(
+            lambda: self.api.historico(nick),
+            lambda historico: self.exibir_historico(historico, nick),
+            lambda _m: None,
+        )
+        self.em_segundo_plano(
+            lambda: self.api.looks(nick),
+            lambda looks: self.exibir_looks(looks, nick),
+            lambda _m: None,
+        )
+
+    def atualizar_botao_watch(self):
+        if not self.nick:
+            self.btn_watch.text = "Acompanhar"
+            return
+        self.btn_watch.text = "Acompanhando" if self.nick.lower() in self.watched else "Acompanhar"
+
+    def alternar_watch(self):
+        if not self.nick:
+            self.aviso("Consulte um nick primeiro.", True)
+            return
+        nick = self.nick
+        if nick.lower() in self.watched:
+            self.em_segundo_plano(
+                lambda: self.api.remover_watch(self.device, nick),
+                lambda _r: self._watch_alterado(nick, False),
+            )
+        else:
+            self.em_segundo_plano(
+                lambda: self.api.adicionar_watch(self.device, nick),
+                lambda _r: self._watch_alterado(nick, True),
+            )
+
+    def _watch_alterado(self, nick, adicionado):
+        self.aviso(("Acompanhando " if adicionado else "Removido: ") + nick)
+        self.carregar_watch()
+        self.atualizar_botao_watch()
+        if adicionado:
+            self._pedir_permissoes()
+
+    def carregar_watch(self, silencioso=False):
+        falha = (lambda _m: None) if silencioso else None
+        self.em_segundo_plano(
+            lambda: self.api.watch(self.device),
+            self.exibir_watch,
+            falha,
+        )
+
+    def exibir_watch(self, dados):
+        self.watch = dados.get("avatares") or []
+        self.lista_watch.clear_widgets()
+        if not self.watch:
+            self.lista_watch.add_widget(self.paragrafo("Nenhum avatar na lista.", cor=MUTED_ESCURO))
+        for avatar in self.watch:
+            nick = str(avatar.get("nick") or "")
+            sala = (avatar.get("sala") or {}).get("nome") or "sem sala exposta"
+            linha = MDBoxLayout(orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(46))
+            coluna = MDBoxLayout(orientation="vertical", spacing=dp(0), size_hint_y=None)
+            coluna.bind(minimum_height=coluna.setter("height"))
+            coluna.add_widget(self.paragrafo(nick, cor=TEXTO, negrito=True))
+            coluna.add_widget(
+                self.paragrafo(
+                    ("online" if avatar.get("online") else "offline") + "  -  " + str(sala),
+                    cor=MUTED,
+                )
+            )
+            linha.add_widget(coluna)
+            icone = MDIconButton(
+                icon="delete",
+                theme_text_color="Custom",
+                text_color=MUTED,
+                size_hint=(None, None),
+                size=(dp(40), dp(40)),
+                pos_hint={"center_y": 0.5},
+            )
+            icone.bind(on_release=lambda _inst, n=nick: self.remover_watch(n))
+            linha.add_widget(icone)
+            self.lista_watch.add_widget(linha)
+        self.atualizar_botao_watch()
+
+    def remover_watch(self, nick):
+        self.em_segundo_plano(
+            lambda: self.api.remover_watch(self.device, nick),
+            lambda _r: self._watch_alterado(nick, False),
+        )
+
+    def carregar_alertas(self, silencioso=False):
+        falha = (lambda _m: None) if silencioso else None
+        self.em_segundo_plano(
+            lambda: self.api.alertas(self.device),
+            self.exibir_alertas,
+            falha,
+        )
+
+    def exibir_alertas(self, dados):
+        self.alertas = dados.get("alertas") or []
+        self.lista_alertas.clear_widgets()
+        if not self.alertas:
+            self.lista_alertas.add_widget(self.paragrafo("Sem alertas.", cor=MUTED_ESCURO))
+            return
+        for alerta in self.alertas[:30]:
+            item = self.novo_cartao(padding=dp(10), spacing=dp(2), md_bg_color=CARTAO_CLARO)
+            titulo = self.paragrafo(
+                str(alerta.get("titulo") or "Alerta"),
+                cor=TEXTO if not alerta.get("visto") else MUTED,
+                negrito=not alerta.get("visto"),
+            )
+            item.add_widget(titulo)
+            corpo = alerta.get("corpo")
+            if corpo:
+                item.add_widget(self.paragrafo(str(corpo), cor=MUTED))
+            item.add_widget(self.paragrafo(formatar_data(alerta.get("quando")), cor=MUTED_ESCURO))
+            self.lista_alertas.add_widget(item)
+
+    def marcar_vistos(self):
+        ids = [alerta.get("id") for alerta in self.alertas if not alerta.get("visto") and alerta.get("id")]
+        if not ids:
+            self.aviso("Nada para marcar.")
+            return
+        self.em_segundo_plano(
+            lambda: self.api.marcar_vistos(self.device, ids),
+            lambda _r: (self.aviso("Alertas marcados como vistos."), self.carregar_alertas()),
+        )
+
+    def carregar_salas(self, silencioso=False):
+        if silencioso is False:
+            self.aviso("Carregando salas...")
+        falha = (lambda _m: None) if silencioso else None
+        self.em_segundo_plano(
+            lambda: self.api.salas(),
+            lambda dados: self.exibir_salas(dados.get("salas") or []),
+            falha,
+        )
+
+    def exibir_salas(self, salas):
+        self.lista_salas.clear_widgets()
+        if not salas:
+            self.lista_salas.add_widget(
+                self.paragrafo("Nenhuma sala monitorada ainda.", cor=MUTED_ESCURO)
+            )
+            return
+        for sala in salas:
+            cartao = self.novo_cartao(
+                clicavel=True, padding=dp(10), spacing=dp(2), md_bg_color=CARTAO_CLARO
+            )
+            cartao.add_widget(
+                self.paragrafo(
+                    str(sala.get("nome") or "Sala"), cor=TEXTO, negrito=True
+                )
+            )
+            cartao.add_widget(
+                self.paragrafo(
+                    str(sala.get("dono") or "dono desconhecido")
+                    + "  -  media " + str(sala.get("media"))
+                    + "  -  pico " + str(sala.get("pico")),
+                    cor=MUTED,
+                )
+            )
+            cartao.add_widget(
+                self.paragrafo(
+                    "agora " + str(sala.get("online")) + "  -  tendencia " + str(sala.get("tendencia")),
+                    cor=ACCENT,
+                )
+            )
+            rid = sala.get("rid")
+            if rid:
+                cartao.bind(on_release=lambda _inst, r=rid: self.abrir_sala(r))
+            self.lista_salas.add_widget(cartao)
+
+    def abrir_sala(self, rid):
+        self.campo_sala.text = str(rid)
+        self.aviso("Abrindo sala " + str(rid) + "...")
+        self.em_segundo_plano(
+            lambda: self.api.sala(rid),
+            self.exibir_sala,
+        )
+
+    def exibir_sala(self, dados):
+        sala = dados.get("sala") or {}
+        resumo = dados.get("resumo") or {}
+        self.lbl_sala_resumo.text = (
+            str(sala.get("nome") or "Sala") + "  (" + str(sala.get("rid") or "") + ")"
+        )
+        melhor = (resumo.get("melhor_horario") or {}).get("hora")
+        self.lbl_sala_extra.text = (
+            "Dono: " + str(sala.get("dono") or "?")
+            + "  -  capacidade: " + str(sala.get("capacidade") or "?")
+            + "  -  agora: " + str(resumo.get("online_agora") or 0)
+            + "  -  media: " + str(resumo.get("media") or 0)
+            + "  -  pico: " + str(resumo.get("pico") or 0)
+            + (("  -  melhor horario: " + str(melhor) + "h") if melhor is not None else "")
+        )
+        pontos = dados.get("pontos") or []
+        self.grafico_sala.definir([ponto.get("online") or 0 for ponto in pontos])
+        if pontos:
+            self.lbl_sala_amostras.text = (
+                str(len(pontos)) + " amostras  -  "
+                + formatar_data(pontos[0].get("ts")) + " ate " + formatar_data(pontos[-1].get("ts"))
+            )
+        else:
+            self.lbl_sala_amostras.text = "Sala ainda sem amostras."
+
+    def carregar_diretorio(self):
+        letra = (self.campo_letra.text or "A").strip().upper()[:1] or "A"
+        if not letra.isalnum():
+            self.aviso("Use uma letra ou numero.", True)
+            return
+        self.campo_letra.text = letra
+        self.aviso("Buscando salas com " + letra + "...")
+        self.lista_diretorio.clear_widgets()
+        self.lista_diretorio.add_widget(self.paragrafo("Consultando o IMVU...", cor=MUTED_ESCURO))
+        self.em_segundo_plano(
+            lambda: self.api.diretorio(letra),
+            self.exibir_diretorio,
+        )
+
+    def exibir_diretorio(self, dados):
+        self.lista_diretorio.clear_widgets()
+        salas = dados.get("salas") or []
+        if not salas:
+            self.lista_diretorio.add_widget(
+                self.paragrafo("Nenhuma sala encontrada.", cor=MUTED_ESCURO)
+            )
+            return
+        for sala in salas:
+            rid = sala.get("rid")
+            if not rid:
+                continue
+            cartao = self.novo_cartao(
+                clicavel=True, padding=dp(8), spacing=dp(1), md_bg_color=CARTAO_CLARO
+            )
+            cartao.add_widget(self.paragrafo(str(sala.get("nome") or "Sala"), cor=TEXTO))
+            cartao.add_widget(self.paragrafo(str(rid), cor=MUTED))
+            cartao.bind(on_release=lambda _inst, r=rid: self.abrir_sala(r))
+            self.lista_diretorio.add_widget(cartao)
+        self.aviso(str(len(salas)) + " sala(s) encontrada(s).")
+        self.carregar_salas(silencioso=True)
+
+    def consultar_sala(self):
+        rid = (self.campo_sala.text or "").strip()
+        if not rid:
+            self.aviso("Informe o ID da sala.", True)
+            return
+        self.abrir_sala(rid)
+
+    def ir_para_historico(self):
+        if not self.nick:
+            self.aviso("Consulte um nick primeiro.", True)
+            return
+        self.trocar_aba("historico")
+        self.recarregar_historico()
+
+    def trocar_aba(self, nome):
+        try:
+            self.nav.switch_tab(nome)
+        except Exception:
+            pass
+
+    def recarregar_historico(self):
+        if not self.nick:
+            self.aviso("Consulte um nick primeiro.", True)
+            return
+        nick = self.nick
+        self.em_segundo_plano(
+            lambda: self.api.historico(nick),
+            lambda dados: self.exibir_historico(dados, nick),
+        )
+        self.em_segundo_plano(
+            lambda: self.api.looks(nick),
+            lambda dados: self.exibir_looks(dados, nick),
+        )
+
+    def exibir_historico(self, dados, nick):
+        if not self.nick or self.nick.lower() != str(nick).lower():
+            return
+        stats = dados.get("estatisticas") or {}
+        self.lbl_hist_nome.text = "Historico de @" + nick
+        favorita = stats.get("sala_mais_frequentada") or {}
+        linhas = [
+            "Tempo online (7 dias): " + formatar_minutos(stats.get("minutos_online")),
+            "Recorde online: " + formatar_minutos(stats.get("recorde_online_min")),
+            "Recorde offline: " + formatar_minutos(stats.get("recorde_offline_min")),
+            "Ultima vez: " + formatar_data(stats.get("ultima_vez") or stats.get("ultimo_offline")),
+            "Eventos na janela: " + str(stats.get("eventos") or 0),
+        ]
+        if favorita.get("nome"):
+            linhas.append(
+                "Sala favorita: " + str(favorita.get("nome"))
+                + " (" + str(favorita.get("vezes")) + " eventos)"
+            )
+        self.lbl_hist_resumo.text = "\n".join(linhas)
+
+        grafico = dados.get("grafico") or {}
+        dias = grafico.get("dias") or []
+        self.grafico_dias.definir([dia.get("minutos") or 0 for dia in dias])
+        if dias:
+            self.lbl_dias_periodo.text = (
+                "minutos online por dia  -  " + str(dias[0].get("dia")) + " ate " + str(dias[-1].get("dia"))
+            )
+        horas = grafico.get("horas") or []
+        self.grafico_horas.definir(horas)
+
+        self.lbl_previsao_hist.text = formatar_previsao(dados.get("previsao"))
+
+        self.lista_timeline.clear_widgets()
+        eventos = dados.get("eventos") or []
+        if not eventos:
+            self.lista_timeline.add_widget(self.paragrafo("Sem eventos.", cor=MUTED_ESCURO))
+        for evento in eventos[:30]:
+            tipo = TIPOS.get(evento.get("tipo"), str(evento.get("tipo") or "evento"))
+            sala = evento.get("sala")
+            texto = formatar_data(evento.get("ts")) + "  -  " + tipo
+            if sala:
+                texto += "  -  " + str(sala)
+            self.lista_timeline.add_widget(self.paragrafo(texto, cor=MUTED))
+
+    def exibir_looks(self, dados, nick):
+        if not self.nick or self.nick.lower() != str(nick).lower():
+            return
+        self.caixa_looks.clear_widgets()
+        looks = dados.get("looks") or []
+        if not looks:
+            self.caixa_looks.add_widget(self.paragrafo("Sem looks registrados.", cor=MUTED_ESCURO))
+            return
+        for look in looks[:30]:
+            imagem = look.get("imagem")
+            if not imagem:
+                continue
+            caixa = MDBoxLayout(orientation="vertical", spacing=dp(2), size_hint=(None, None))
+            caixa.height = dp(185)
+            caixa.width = dp(115)
+            foto = Image(
+                source=imagem,
+                size_hint=(None, None),
+                size=(dp(115), dp(150)),
+                fit_mode="cover",
+            )
+            caixa.add_widget(foto)
+            caixa.add_widget(
+                self.paragrafo(formatar_data(look.get("quando")), cor=MUTED, tamanho="11sp")
+            )
+            self.caixa_looks.add_widget(caixa)
+
+    def ao_evento(self, evento):
+        tipo = evento.get("tipo")
+        if not tipo or tipo == "ping":
+            return
+        if tipo == "alerta":
+            titulo = str(evento.get("titulo") or "IMVU Status")
+            corpo = str(evento.get("corpo") or "")
+            self.anexar_feed("[b]Alerta[/b] " + escape_markup(titulo + ((" - " + corpo) if corpo else "")))
+            self.notificar(titulo, corpo)
+            self.carregar_alertas(silencioso=True)
+            return
+        if tipo == "status":
+            nick = str(evento.get("nick") or "")
+            mudancas = evento.get("eventos") or []
+            if "online" in mudancas:
+                acao = "entrou online"
+            elif "offline" in mudancas:
+                acao = "ficou offline"
+            elif "sala" in mudancas:
+                acao = "mudou de sala"
+            elif "look" in mudancas:
+                acao = "trocou de look"
+            else:
+                acao = "atualizou o status"
+            sala = (evento.get("sala") or {}).get("nome")
+            texto = "[b]" + escape_markup(nick) + "[/b] " + acao
+            if sala:
+                texto += "  -  " + escape_markup(str(sala))
+            self.anexar_feed(texto)
+            if self.nick and nick.lower() == self.nick.lower():
+                online = bool(evento.get("online"))
+                self.lbl_status_estado.text = "ONLINE" if online else "OFFLINE"
+                self.lbl_status_estado.text_color = OK if online else ERRO
+                if sala:
+                    self.lbl_status_sala.text = "Sala: " + str(sala)
+            return
+        if tipo == "sala":
+            self.anexar_feed(
+                "Sala [b]" + escape_markup(str(evento.get("nome") or evento.get("rid") or "?")) + "[/b]"
+                + " agora com " + str(evento.get("online") or 0) + " pessoas"
+            )
+
+    def anexar_feed(self, texto):
+        rotulo = self.paragrafo(texto, cor=TEXTO, markup=True, tamanho="12sp")
+        self.caixa_feed.add_widget(rotulo, index=0)
+        while len(self.caixa_feed.children) > 16:
+            self.caixa_feed.remove_widget(self.caixa_feed.children[-1])
+
+    def notificar(self, titulo, corpo):
+        if not self.config.get("notificacoes", True):
+            return
+        try:
+            from plyer import notification
+
+            notification.notify(
+                title=titulo,
+                message=corpo or "",
+                app_name="IMVU Status",
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+    def abrir_config(self):
+        self.sm.current = "config"
+        self.topbar.title = "Configuracoes"
+        self.topbar.left_action_items = [["arrow-left", lambda _x: self.voltar_config()]]
+        self.topbar.right_action_items = []
+
+    def voltar_config(self):
+        self.sm.current = "principal"
+        self.topbar.title = "IMVU Status"
+        self.topbar.left_action_items = []
+        self.topbar.right_action_items = [
+            ["refresh", lambda _x: self.atualizar_tudo()],
+            ["cog", lambda _x: self.abrir_config()],
+        ]
+
+    def testar_conexao(self):
+        url = (self.campo_api.text or "").strip().rstrip("/")
+        if not url.startswith("http://") and not url.startswith("https://"):
+            self.aviso("URL invalida: use http:// ou https://", True)
+            return
+        self.aviso("Testando conexao...")
+        self.em_segundo_plano(
+            lambda: Api(url).health(),
+            lambda dados: self.aviso(
+                "Conectado - v" + str(dados.get("versao") or "?")
+                + (" - coletor ativo" if not (dados.get("coletor") or {}).get("desligado") else " - coletor desligado")
+            ),
+        )
+
+    def salvar_config(self):
+        url = (self.campo_api.text or "").strip().rstrip("/")
+        if not url.startswith("http://") and not url.startswith("https://"):
+            self.aviso("URL invalida: use http:// ou https://", True)
+            return
+        self.config["api"] = url
+        self.config["notificacoes"] = bool(self.switch_notificacoes.active)
+        self._salvar_config()
+        self.api = Api(url)
+        self.iniciar_live()
+        self.aviso("Configuracoes salvas.")
+        self.atualizar_tudo()
+
+    def abrir_painel(self):
+        try:
+            webbrowser.open(self.api.base + "/")
+        except Exception:
+            self.aviso("Nao foi possivel abrir o navegador.", True)
+
+    def atualizar_tudo(self):
+        self.carregar_salas(silencioso=True)
+        self.carregar_watch(silencioso=True)
+        self.carregar_alertas(silencioso=True)
+        if self.nick:
+            self.em_segundo_plano(
+                lambda: self.api.status(self.nick),
+                lambda dados: self.exibir_status(dados, self.nick),
+                lambda _m: None,
+            )
 
 
 if __name__ == "__main__":
-    IMVUStatusApp().run()
+    ImvuStatusApp().run()

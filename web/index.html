@@ -1,163 +1,248 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0F172A">
-<meta name="mobile-web-app-capable" content="yes">
-<title>IMVU Status</title>
-<link rel="manifest" href="/manifest.webmanifest">
-<link rel="icon" href="/favicon.ico">
-<link rel="stylesheet" href="/web/style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#070b12">
+  <meta name="description" content="Observatorio publico do IMVU: status em tempo real, historico, previsao, analytics de salas e alertas.">
+  <title>IMVU Status - Observatorio em tempo real</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
 </head>
 <body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">IS</span>
+        <div>
+          <strong>IMVU Status</strong>
+          <small>observatorio publico</small>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <button type="button" data-page="painel" class="active">
+          <span class="nav-dot"></span>Painel
+        </button>
+        <button type="button" data-page="avatar">
+          <span class="nav-dot"></span>Avatar
+        </button>
+        <button type="button" data-page="salas">
+          <span class="nav-dot"></span>Salas
+        </button>
+        <button type="button" data-page="alertas">
+          <span class="nav-dot"></span>Alertas
+        </button>
+        <button type="button" data-page="api">
+          <span class="nav-dot"></span>API
+        </button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="live-pill"><span class="dot" id="live-dot"></span><span id="live-label">conectando</span></div>
+        <small id="api-version">v3.0.0</small>
+        <small class="muted">dados publicos do IMVU</small>
+      </div>
+    </aside>
 
-<!-- ===================== TELA DE LOGIN ===================== -->
-<div id="tela-login" class="tela">
-  <div class="login-bg"></div>
-  <div class="login-card">
-    <img class="banner" src="/assets/banner_login.jpg" alt="IMVU Status">
-    <h1>IMVU Status</h1>
-    <p class="sub">Entre com seu email para resgatar os créditos grátis e sincronizar em qualquer aparelho</p>
-    <input id="login-email" type="email" placeholder="email" autocomplete="email" inputmode="email">
-    <input id="login-senha" type="password" placeholder="senha" autocomplete="current-password">
-    <input id="login-senha2" type="password" placeholder="repita a senha" autocomplete="new-password" class="oculto">
-    <div id="login-spinner" class="spinner oculto"></div>
-    <button id="btn-login" class="btn primario">ENTRAR</button>
-    <button id="btn-modo" class="btn texto">não tem conta? CRIAR CONTA</button>
-    <button id="btn-esqueci" class="btn texto">esqueci a senha</button>
-    <div id="google-box" class="oculto">
-      <div class="ou">ou</div>
-      <div id="google-btn"></div>
-    </div>
-    <p id="login-aviso" class="aviso"></p>
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="page-title">Painel</h1>
+          <p id="page-sub">Visao geral do movimento em tempo real.</p>
+        </div>
+        <div class="top-actions">
+          <span class="pill" id="device-pill">aparelho</span>
+          <span class="pill" id="clock">--:--</span>
+        </div>
+      </header>
+
+      <section class="page active" id="page-painel">
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head">
+              <h2>Resumo do dia</h2>
+              <button type="button" class="ghost small" id="digest-refresh">Atualizar</button>
+            </div>
+            <div id="digest-lines" class="digest"><div class="skeleton"></div></div>
+            <p id="digest-ai" class="digest-ai"></p>
+          </article>
+          <article class="card">
+            <div class="card-head"><h2>Saude do sistema</h2></div>
+            <div id="health-grid" class="metrics"></div>
+          </article>
+        </div>
+
+        <article class="card">
+          <div class="card-head">
+            <h2>Mapa de calor</h2>
+            <span class="hint">media de pessoas por sala, ultimos 7 dias</span>
+          </div>
+          <div id="heatmap" class="heatmap"><div class="skeleton"></div></div>
+        </article>
+
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head"><h2>Salas em destaque</h2><span class="hint">ultimas 24h</span></div>
+            <div id="painel-rooms" class="room-list"><div class="skeleton"></div></div>
+          </article>
+          <article class="card">
+            <div class="card-head"><h2>Ao vivo</h2><span class="hint">eventos do coletor</span></div>
+            <div id="live-feed" class="feed"><p class="empty">Aguardando eventos...</p></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="page" id="page-avatar">
+        <div class="searchbar">
+          <input id="nick-input" type="text" placeholder="digite o nick do IMVU" autocomplete="off" spellcheck="false">
+          <button type="button" id="buscar-btn" class="primary">Consultar</button>
+          <button type="button" id="watch-btn" class="ghost" disabled>Acompanhar</button>
+        </div>
+
+        <div class="grid avatar-grid">
+          <article class="card profile-card" id="avatar-card">
+            <div class="empty big">Consulte um nick para ver o perfil, historico e previsao.</div>
+          </article>
+          <div class="stack">
+            <article class="card">
+              <div class="card-head"><h2>Resumo</h2><span class="hint" id="avatar-updated"></span></div>
+              <div id="avatar-metrics" class="metrics"></div>
+            </article>
+            <article class="card">
+              <div class="card-head"><h2>Previsao de online</h2></div>
+              <div id="avatar-prediction" class="prediction">
+                <p class="empty">Sem dados suficientes.</p>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head"><h2>Presenca por dia</h2><span class="hint">minutos online</span></div>
+            <div class="chart-wrap"><canvas id="chart-dias"></canvas></div>
+          </article>
+          <article class="card">
+            <div class="card-head"><h2>Atividade por hora</h2><span class="hint">entradas online</span></div>
+            <div class="chart-wrap"><canvas id="chart-horas"></canvas></div>
+          </article>
+        </div>
+
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head"><h2>Linha do tempo</h2></div>
+            <div id="avatar-timeline" class="timeline"><p class="empty">Sem eventos.</p></div>
+          </article>
+          <article class="card">
+            <div class="card-head"><h2>Salas frequentes</h2></div>
+            <div id="avatar-rooms" class="room-list"><p class="empty">Sem dados.</p></div>
+          </article>
+        </div>
+
+        <article class="card">
+          <div class="card-head"><h2>Galeria de looks</h2><span class="hint">historico de aparencia</span></div>
+          <div id="avatar-looks" class="looks"><p class="empty">Sem looks registrados.</p></div>
+        </article>
+      </section>
+
+      <section class="page" id="page-salas">
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head"><h2>Salas em destaque</h2><span class="hint">clique para abrir</span></div>
+            <div id="rooms-table" class="room-list"><div class="skeleton"></div></div>
+          </article>
+          <article class="card">
+            <div class="card-head"><h2>Consultar sala</h2></div>
+            <div class="searchbar compact">
+              <input id="rid-input" type="text" placeholder="ID da sala (ex: 12345678-1)">
+              <button type="button" id="rid-btn" class="primary">Ver</button>
+            </div>
+            <div id="room-detail" class="room-detail"><p class="empty">Informe o ID de uma sala publica.</p></div>
+            <div class="chart-wrap small"><canvas id="chart-sala"></canvas></div>
+          </article>
+        </div>
+
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head"><h2>Mapa de calor</h2><span class="hint">7 dias x 24 horas</span></div>
+            <div id="heatmap-salas" class="heatmap"><div class="skeleton"></div></div>
+          </article>
+          <article class="card">
+            <div class="card-head"><h2>Diretorio publico</h2></div>
+            <div class="searchbar compact">
+              <select id="letra-select"></select>
+              <button type="button" id="letra-btn" class="primary">Buscar</button>
+            </div>
+            <div id="directory" class="chips"><p class="empty">Escolha uma letra.</p></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="page" id="page-alertas">
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head"><h2>Minha lista</h2><span class="hint">acompanhamento em tempo real</span></div>
+            <div id="watch-list" class="watch-list"><p class="empty">Nenhum avatar na lista.</p></div>
+          </article>
+          <article class="card">
+            <div class="card-head">
+              <h2>Ultimos alertas</h2>
+              <button type="button" class="ghost small" id="mark-seen">Marcar vistos</button>
+            </div>
+            <div id="alert-list" class="feed"><p class="empty">Sem alertas.</p></div>
+          </article>
+        </div>
+
+        <article class="card">
+          <div class="card-head"><h2>Webhooks</h2><span class="hint">Discord, Telegram ou endpoint proprio</span></div>
+          <form id="hook-form" class="form-grid">
+            <label>Tipo
+              <select id="hook-kind">
+                <option value="discord">Discord</option>
+                <option value="telegram">Telegram</option>
+                <option value="generico">Generico</option>
+              </select>
+            </label>
+            <label class="wide">URL https
+              <input id="hook-url" type="url" placeholder="https://discord.com/api/webhooks/..." required>
+            </label>
+            <label id="hook-chat-wrap">chat_id (Telegram)
+              <input id="hook-chat" type="text" placeholder="123456789">
+            </label>
+            <fieldset class="wide events">
+              <legend>Eventos</legend>
+              <label><input type="checkbox" value="online" checked> online</label>
+              <label><input type="checkbox" value="offline" checked> offline</label>
+              <label><input type="checkbox" value="sala" checked> sala</label>
+              <label><input type="checkbox" value="look"> look</label>
+              <label><input type="checkbox" value="suspeita"> suspeita</label>
+            </fieldset>
+            <button type="submit" class="primary wide">Adicionar webhook</button>
+          </form>
+          <div id="hook-list" class="watch-list"><p class="empty">Nenhum webhook configurado.</p></div>
+        </article>
+      </section>
+
+      <section class="page" id="page-api">
+        <article class="card">
+          <div class="card-head"><h2>API publica</h2><span class="hint">documentacao interativa em /docs</span></div>
+          <p class="text">Todos os dados sao publicos e agregados. Respeite os termos do IMVU, limites de requisicao e a LGPD. Nao use para perseguir ou vigiar pessoas.</p>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>Metodo</th><th>Rota</th><th>Descricao</th></tr></thead>
+              <tbody id="api-table"></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="card">
+          <div class="card-head"><h2>Exemplos</h2></div>
+          <pre id="api-examples" class="code"></pre>
+        </article>
+      </section>
+    </main>
   </div>
-</div>
 
-<!-- ===================== APP ===================== -->
-<div id="tela-app" class="tela oculto">
-  <div class="fundo-app"></div>
-  <header class="topo">IMVU Status</header>
-
-  <main id="conteudo">
-
-    <!-- ABA NICK -->
-    <section id="aba-nick" class="aba">
-      <input id="nick-field" type="text" placeholder="nick do avatar" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <div class="linha-botoes">
-        <button id="btn-monitor" class="btn primario">MONITORAR</button>
-        <input id="intervalo-field" type="number" min="15" max="600" value="30" title="segundos" inputmode="numeric">
-      </div>
-      <div class="card">
-        <img id="foto-avatar" class="foto oculto" alt="">
-        <div id="spinner-nick" class="spinner oculto"></div>
-        <div id="resultado-nick" class="resultado">Digite um nick e toque em MONITORAR ou no botão CHECAR abaixo.</div>
-      </div>
-      <button id="btn-checar" class="btn contorno">CHECAR</button>
-    </section>
-
-    <!-- ABA SALA -->
-    <section id="aba-sala" class="aba oculto">
-      <input id="sala-field" type="text" placeholder="ID da sala (ex: 12345678-1) ou link" autocomplete="off">
-      <button id="btn-sala" class="btn primario">BUSCAR SALA</button>
-      <div class="card">
-        <div id="resultado-sala" class="resultado">Cole o ID de uma sala pública para ver dono, lotação e participantes.</div>
-      </div>
-    </section>
-
-    <!-- ABA CONTA -->
-    <section id="aba-conta" class="aba oculto">
-      <div class="card">
-        <img class="capa" src="/assets/capa_conta.jpg" alt="">
-        <div class="linha-conta">
-          <div class="avatar-icone">
-            <svg viewBox="0 0 24 24"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>
-          </div>
-          <div class="col">
-            <b>Minha conta</b>
-            <span id="conta-status" class="fraco">carregando...</span>
-          </div>
-        </div>
-        <div class="linha-email">
-          <span id="conta-email" class="fraco"></span>
-          <button id="btn-ver-email" class="btn icone" title="mostrar/ocultar email">
-            <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.7 7.6 1 12c1.7 4.4 6 7.5 11 7.5s9.3-3.1 11-7.5c-1.7-4.4-6-7.5-11-7.5zm0 12.5a5 5 0 1 1 5-5 5 5 0 0 1-5 5zm0-8a3 3 0 1 0 3 3 3 3 0 0 0-3-3z"/></svg>
-          </button>
-        </div>
-        <button id="btn-reenviar" class="btn contorno oculto">REENVIAR EMAIL DE CONFIRMAÇÃO</button>
-        <button id="btn-sair" class="btn texto vermelho">SAIR DA CONTA</button>
-      </div>
-      <div class="card">
-        <b>Vínculo do resgate</b>
-        <p class="fraco">Sua conta de email fica ligada para sempre a um único avatar do IMVU (e cada avatar a uma única conta). Trocando de celular ou usando VPN, o resgate continua no mesmo nick.</p>
-      </div>
-    </section>
-
-    <!-- ABA PRESENTE -->
-    <section id="aba-presente" class="aba oculto">
-      <p class="resultado">Presente grátis: <b>100 créditos</b> a cada 24 horas para cada avatar! Digite seu nick, confirme que a conta é sua e resgate. Toque em VER WISHLIST para ver a lista de desejos do nick.</p>
-      <input id="presente-nick" type="text" placeholder="seu nick no IMVU" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <input id="presente-msg" type="text" placeholder="mensagem (opcional)" autocomplete="off">
-      <label class="check-linha">
-        <input id="presente-confirmo" type="checkbox">
-        <span>Confirmo que este nick é a <b>minha conta</b> no IMVU.</span>
-      </label>
-      <div class="linha-botoes">
-        <button id="btn-resgatar" class="btn primario">RESGATAR 100 CRÉDITOS</button>
-        <button id="btn-wishlist" class="btn contorno">VER WISHLIST</button>
-      </div>
-      <div id="spinner-presente" class="spinner oculto"></div>
-      <div class="card">
-        <div id="resultado-presente" class="resultado">Digite seu nick, confirme que a conta é sua e toque em RESGATAR 100 CRÉDITOS.</div>
-      </div>
-    </section>
-
-    <!-- ABA APP -->
-    <section id="aba-app" class="aba oculto">
-      <div class="card">
-        <b id="app-versao">Versão do site: ?</b>
-        <div id="app-aviso-webview" class="oculto">
-          <p class="fraco">Este app abre o site oficial do IMVU Status. Toda atualização publicada no site chega sozinha no seu celular — não precisa reinstalar nada.</p>
-          <button id="btn-recarregar" class="btn contorno">RECARREGAR AGORA</button>
-        </div>
-        <div id="app-aviso-browser">
-          <p class="fraco">Pelo site você já usa tudo. Para ter o ícone no celular, use "Adicionar à tela inicial" no menu do navegador — ou baixe o app Android (atualiza sozinho junto com o site).</p>
-          <button id="btn-baixar-apk" class="btn contorno">BAIXAR APP ANDROID (APK)</button>
-        </div>
-      </div>
-      <button id="btn-update" class="btn primario">VERIFICAR ATUALIZAÇÃO</button>
-      <div class="card">
-        <div id="update-titulo" class="resultado">Toque em VERIFICAR ATUALIZAÇÃO para ver as novidades.</div>
-        <div id="update-notas" class="fraco notas"></div>
-      </div>
-    </section>
-
-  </main>
-
-  <nav class="nav">
-    <button data-aba="nick" class="ativo">
-      <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>
-      NICK
-    </button>
-    <button data-aba="sala">
-      <svg viewBox="0 0 24 24"><path d="M12 3 3 10.8h2.5V21h5v-6h3v6h5V10.8H21z"/></svg>
-      SALA
-    </button>
-    <button data-aba="conta">
-      <svg viewBox="0 0 24 24"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>
-      CONTA
-    </button>
-    <button data-aba="presente">
-      <svg viewBox="0 0 24 24"><path d="M20 12v8a2 2 0 0 1-2 2h-5v-10zm-9 10H6a2 2 0 0 1-2-2v-8h7zM21 7v3H3V7a2 2 0 0 1 2-2h1.6A3 3 0 0 1 9 1a3 3 0 0 1 3 2 3 3 0 0 1 3-2 3 3 0 0 1 2.4 4H19a2 2 0 0 1 2 2zM7.5 5a1 1 0 0 0 2 0V5zm3 0a1 1 0 0 0 2 0 1 1 0 0 0-2 0zm4 0a1 1 0 0 0 2 0 1 1 0 0 0-2 0z"/></svg>
-      PRESENTE
-    </button>
-    <button data-aba="app">
-      <svg viewBox="0 0 24 24"><path d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 12 6a5.9 5.9 0 0 1 4.22 1.78L13 11h7V4z"/></svg>
-      APP
-    </button>
-  </nav>
-</div>
-
-<script src="/web/app.js"></script>
+  <div id="toast" class="toast" role="status"></div>
 </body>
 </html>

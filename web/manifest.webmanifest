@@ -1,14 +1,15 @@
 {
   "name": "IMVU Status",
   "short_name": "IMVU Status",
-  "description": "Consulta de nick do IMVU, salas, presente gratis e mais.",
+  "description": "Observatorio publico do IMVU: status em tempo real, historico, previsao, salas e alertas.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#0F172A",
-  "theme_color": "#0F172A",
+  "background_color": "#070b12",
+  "theme_color": "#070b12",
   "icons": [
-    { "src": "/assets/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+    { "src": "/static/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }

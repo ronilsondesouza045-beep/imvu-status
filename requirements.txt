@@ -1,1 +1,7 @@
-# sem dependencias externas - o backend usa apenas a biblioteca padrao do Python
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+sqlalchemy>=2.0,<3
+httpx>=0.27,<1
+pydantic>=2.7,<3
+tzdata
+psycopg[binary]>=3.1,<4

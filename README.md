@@ -11,6 +11,9 @@ Observatorio publico do IMVU: status em tempo real, historico, previsao de horar
 ## Recursos
 
 - **Status em tempo real** de qualquer avatar publico: online/offline, disponibilidade, sala exposta, pais, seguidores e ultimo acesso.
+- **Perfil completo** do avatar: dados publicos do perfil, detalhes e **outfit atual** com precos em creditos.
+- **Catalogo** de produtos com busca, ordenacao (relevancia, novidades, preco, avaliacao) e paginacao.
+- **Salas ao vivo**: diretorio publico, salas ordenadas por ocupacao e detalhes da sala (foto, descricao, capacidade, idioma, dono).
 - **Historico** com presenca por dia, atividade por hora, recordes de tempo online/offline, linha do tempo e salas frequentes.
 - **Previsao** ponderada por recencia (matriz 7x24, janela de 90 dias): horarios mais provaveis de ficar online.
 - **Galeria de looks** com imagens registradas quando o visual muda.
@@ -21,6 +24,7 @@ Observatorio publico do IMVU: status em tempo real, historico, previsao de horar
 - **Resumo diario** deterministico, com texto opcional gerado por IA compativel com OpenAI.
 - **API publica** com OpenAPI em `/docs`.
 - **App Android** com abas Inicio, Salas, Historico e Alertas, notificacoes locais e configuracao do servidor.
+- **Painel completo no APK**: o botao de globo na barra superior abre o painel web (catalogo, perfil, salas, API) numa WebView nativa, sem sair do app.
 
 ---
 
@@ -97,6 +101,8 @@ Configuracao no `buildozer.spec`:
 - `android.api = 33`, `android.minapi = 24`, NDK 25b (build estavel; veja Play Store abaixo)
 
 No primeiro uso, abra **Configuracoes** no app e informe a URL do backend (ex.: `https://imvu-status.onrender.com`). O painel web fica na mesma URL.
+
+O icone de globo na barra superior (tambem disponivel em Configuracoes) abre o **painel completo** na WebView nativa do Android, em modo `?app=1` para que os links abram na mesma janela. No desktop, o mesmo botao abre o painel no navegador. A WebView exige o backend em HTTPS; URLs `http://` podem ser bloqueadas pelo Android.
 
 Notificacoes usam o canal local do Android (plyer). O app recebe eventos por SSE enquanto estiver em execucao; nao ha push via FCM quando o processo esta encerrado.
 
@@ -178,11 +184,16 @@ Base: `https://SEU-SERVIDOR`
 | GET | `/api/status/{nick}` | status atual, sala, previsao |
 | GET | `/api/public/status/{nick}` | alias publico do status |
 | GET | `/api/avatar/{nick}/history?horas=168` | resumo, graficos, timeline e previsao |
+| GET | `/api/avatar/{nick}/profile?produtos=30` | perfil completo e outfit atual |
+| GET | `/api/avatar/{nick}/outfit?limite=40` | itens do outfit com precos |
 | GET | `/api/avatar/{nick}/looks` | galeria de looks |
 | GET | `/api/avatar/{nick}/prediction` | previsao de horarios |
+| GET | `/api/catalog/search?q=dress&pagina=1&ordenar=relevancia&tipo=produtos` | busca no catalogo |
 | GET | `/api/rooms/top?horas=24&limite=20` | ranking de salas |
 | GET | `/api/rooms/heatmap?horas=168` | mapa de calor 7x24 |
 | GET | `/api/rooms/directory?letra=A` | diretorio publico |
+| GET | `/api/rooms/live?letra=A&limite=12` | salas online ordenadas por ocupacao |
+| GET | `/api/rooms/{rid}` | detalhes publicos da sala |
 | GET | `/api/rooms/{rid}/history?horas=24` | ocupacao de uma sala |
 | GET | `/api/digest?horas=24` | resumo do dia (com `texto_ia` opcional) |
 | GET | `/api/watch?device={id}` | avatares acompanhados |
@@ -204,6 +215,9 @@ Exemplos:
 ```bash
 curl https://SEU-SERVIDOR/api/status/algum_nick
 curl "https://SEU-SERVIDOR/api/avatar/algum_nick/history?horas=168"
+curl "https://SEU-SERVIDOR/api/avatar/algum_nick/profile?produtos=30"
+curl "https://SEU-SERVIDOR/api/catalog/search?q=dress&ordenar=preco_asc"
+curl "https://SEU-SERVIDOR/api/rooms/live?letra=A&limite=12"
 curl "https://SEU-SERVIDOR/api/rooms/top?horas=24&limite=10"
 curl "https://SEU-SERVIDOR/api/events?device=0123456789abcdef0123456789abcdef"
 ```

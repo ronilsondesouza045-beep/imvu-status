@@ -3,10 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#070b12">
+  <meta name="theme-color" content="#16181c">
   <meta name="description" content="Observatorio publico do IMVU: status em tempo real, historico, previsao, analytics de salas e alertas.">
   <title>IMVU Status - Observatorio em tempo real</title>
   <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js" defer></script>
   <script src="/static/app.js" defer></script>
@@ -30,6 +33,9 @@
         </button>
         <button type="button" data-page="salas">
           <span class="nav-dot"></span>Salas
+        </button>
+        <button type="button" data-page="catalogo">
+          <span class="nav-dot"></span>Catalogo
         </button>
         <button type="button" data-page="alertas">
           <span class="nav-dot"></span>Alertas
@@ -120,6 +126,21 @@
 
         <div class="grid two">
           <article class="card">
+            <div class="card-head"><h2>Outfit atual</h2><span class="hint" id="outfit-info"></span></div>
+            <div id="avatar-outfit" class="catalog-grid">
+              <p class="empty">Consulte um nick para ver o outfit.</p>
+            </div>
+          </article>
+          <article class="card">
+            <div class="card-head"><h2>Perfil completo</h2><span class="hint">dados publicos do IMVU</span></div>
+            <div id="avatar-details" class="details">
+              <p class="empty">Consulte um nick para ver os detalhes.</p>
+            </div>
+          </article>
+        </div>
+
+        <div class="grid two">
+          <article class="card">
             <div class="card-head"><h2>Presenca por dia</h2><span class="hint">minutos online</span></div>
             <div class="chart-wrap"><canvas id="chart-dias"></canvas></div>
           </article>
@@ -163,6 +184,18 @@
           </article>
         </div>
 
+        <article class="card">
+          <div class="card-head">
+            <h2>Ao vivo agora</h2>
+            <span class="hint">ocupacao real das salas publicas do IMVU</span>
+          </div>
+          <div class="searchbar compact">
+            <select id="vivo-letra"></select>
+            <button type="button" id="vivo-btn" class="primary">Atualizar</button>
+          </div>
+          <div id="rooms-live" class="live-grid"><div class="skeleton"></div></div>
+        </article>
+
         <div class="grid two">
           <article class="card">
             <div class="card-head"><h2>Mapa de calor</h2><span class="hint">7 dias x 24 horas</span></div>
@@ -177,6 +210,36 @@
             <div id="directory" class="chips"><p class="empty">Escolha uma letra.</p></div>
           </article>
         </div>
+      </section>
+
+      <section class="page" id="page-catalogo">
+        <article class="card">
+          <div class="card-head">
+            <h2>Catalogo IMVU</h2>
+            <span class="hint">produtos publicos da loja oficial</span>
+          </div>
+          <form id="catalog-form" class="searchbar compact">
+            <input id="catalog-q" type="text" placeholder="produto, estilo ou criador" required autocomplete="off" spellcheck="false">
+            <select id="catalog-type">
+              <option value="produtos">Produtos</option>
+              <option value="criador">Criadores</option>
+              <option value="id">ID do produto</option>
+            </select>
+            <select id="catalog-sort">
+              <option value="relevancia">Relevancia</option>
+              <option value="novidades">Novidades</option>
+              <option value="avaliacao">Melhor avaliados</option>
+              <option value="preco_asc">Menor preco</option>
+              <option value="preco_desc">Maior preco</option>
+            </select>
+            <button type="submit" class="primary">Buscar</button>
+          </form>
+          <div id="catalog-info" class="hint"></div>
+          <div id="catalog-grid" class="catalog-grid">
+            <p class="empty">Digite um termo para buscar no catalogo.</p>
+          </div>
+          <div id="catalog-pager" class="pager"></div>
+        </article>
       </section>
 
       <section class="page" id="page-alertas">

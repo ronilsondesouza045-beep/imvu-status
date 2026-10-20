@@ -18,7 +18,7 @@ from kivy.uix.image import Image
 from kivy.uix.screenmanager import NoTransition, ScreenManager
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
-from kivy.utils import escape_markup
+from kivy.utils import escape_markup, platform
 
 from kivymd.app import MDApp
 from kivymd.uix.bottomnavigation import MDBottomNavigation, MDBottomNavigationItem
@@ -257,6 +257,9 @@ class ImvuStatusApp(MDApp):
         self.watch = []
         self.alertas = []
         self.live = None
+        self._webview = None
+        self._webview_raiz = None
+        self._webview_listeners = []
 
         self._salvar_config()
 
@@ -266,6 +269,7 @@ class ImvuStatusApp(MDApp):
             elevation=2,
             md_bg_color=FUNDO,
             right_action_items=[
+                ["web", lambda _x: self.abrir_painel()],
                 ["refresh", lambda _x: self.atualizar_tudo()],
                 ["cog", lambda _x: self.abrir_config()],
             ],
@@ -288,6 +292,7 @@ class ImvuStatusApp(MDApp):
         self.sm.add_widget(self._tela_config())
         raiz.add_widget(self.topbar)
         raiz.add_widget(self.sm)
+        Window.bind(on_keyboard=self._ao_tecla_painel)
         return raiz
 
     @property
@@ -691,6 +696,11 @@ class ImvuStatusApp(MDApp):
     def on_stop(self):
         if self.live is not None:
             self.live.parar()
+        if self._webview is not None:
+            try:
+                self._fechar_painel_android()
+            except Exception:
+                pass
 
     def _pedir_permissoes(self):
         try:
@@ -1184,6 +1194,7 @@ class ImvuStatusApp(MDApp):
         self.topbar.title = "IMVU Status"
         self.topbar.left_action_items = []
         self.topbar.right_action_items = [
+            ["web", lambda _x: self.abrir_painel()],
             ["refresh", lambda _x: self.atualizar_tudo()],
             ["cog", lambda _x: self.abrir_config()],
         ]
@@ -1216,10 +1227,150 @@ class ImvuStatusApp(MDApp):
         self.atualizar_tudo()
 
     def abrir_painel(self):
+        url = self.api.base + "/?pagina=painel&app=1"
+        if platform != "android":
+            try:
+                webbrowser.open(url)
+            except Exception:
+                self.aviso("Nao foi possivel abrir o navegador.", True)
+            return
         try:
-            webbrowser.open(self.api.base + "/")
-        except Exception:
-            self.aviso("Nao foi possivel abrir o navegador.", True)
+            self._abrir_painel_android(url)
+        except Exception as exc:
+            self.aviso("Falha ao abrir o painel: " + str(exc), True)
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+
+    def _abrir_painel_android(self, url):
+        from android.runnable import run_on_ui_thread
+        from jnius import PythonJavaClass, autoclass, java_method
+
+        if self._webview is not None:
+            @run_on_ui_thread
+            def recarregar():
+                if self._webview is not None:
+                    self._webview.loadUrl(url)
+            recarregar()
+            return
+
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        WebView = autoclass("android.webkit.WebView")
+        WebViewClient = autoclass("android.webkit.WebViewClient")
+        LinearLayout = autoclass("android.widget.LinearLayout")
+        TextView = autoclass("android.widget.TextView")
+        Button = autoclass("android.widget.Button")
+        Gravity = autoclass("android.view.Gravity")
+        Color = autoclass("android.graphics.Color")
+        TypedValue = autoclass("android.util.TypedValue")
+        Params = autoclass("android.widget.LinearLayout$LayoutParams")
+
+        class Clique(PythonJavaClass):
+            __javainterfaces__ = ["android/view/View$OnClickListener"]
+            __javacontext__ = "app"
+
+            def __init__(self, acao):
+                super().__init__()
+                self.acao = acao
+
+            @java_method("(Landroid/view/View;)V")
+            def onClick(self, _view):
+                self.acao()
+
+        app = self
+
+        def voltar():
+            web = app._webview
+            if web is None:
+                return
+            if web.canGoBack():
+                web.goBack()
+            else:
+                app._fechar_painel_android()
+
+        listeners = [Clique(voltar), Clique(self._fechar_painel_android)]
+        self._webview_listeners = listeners
+
+        @run_on_ui_thread
+        def montar():
+            raiz = LinearLayout(activity)
+            raiz.setOrientation(LinearLayout.VERTICAL)
+            raiz.setBackgroundColor(Color.parseColor("#101216"))
+
+            barra = LinearLayout(activity)
+            barra.setOrientation(LinearLayout.HORIZONTAL)
+            barra.setGravity(Gravity.CENTER_VERTICAL)
+            barra.setBackgroundColor(Color.parseColor("#16181c"))
+            barra.setPadding(int(dp(10)), int(dp(6)), int(dp(10)), int(dp(6)))
+
+            titulo = TextView(activity)
+            titulo.setText("IMVU Status - painel completo")
+            titulo.setTextColor(Color.parseColor("#f3f4f6"))
+            titulo.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14)
+            barra.addView(titulo, Params(0, -2, 1.0))
+
+            btn_voltar = Button(activity)
+            btn_voltar.setText("Voltar")
+            btn_voltar.setAllCaps(False)
+            btn_voltar.setOnClickListener(listeners[0])
+            barra.addView(btn_voltar, Params(-2, -2))
+
+            btn_fechar = Button(activity)
+            btn_fechar.setText("Fechar")
+            btn_fechar.setAllCaps(False)
+            btn_fechar.setOnClickListener(listeners[1])
+            barra.addView(btn_fechar, Params(-2, -2))
+
+            raiz.addView(barra, Params(-1, -2))
+
+            web = WebView(activity)
+            config = web.getSettings()
+            config.setJavaScriptEnabled(True)
+            config.setDomStorageEnabled(True)
+            config.setLoadWithOverviewMode(True)
+            config.setUseWideViewPort(True)
+            config.setBuiltInZoomControls(False)
+            config.setDisplayZoomControls(False)
+            web.setBackgroundColor(Color.parseColor("#16181c"))
+            web.setWebViewClient(WebViewClient())
+            web.loadUrl(url)
+            raiz.addView(web, Params(-1, 0, 1.0))
+
+            activity.addContentView(raiz, Params(-1, -1))
+            self._webview = web
+            self._webview_raiz = raiz
+
+        montar()
+
+    def _fechar_painel_android(self):
+        from android.runnable import run_on_ui_thread
+
+        @run_on_ui_thread
+        def fechar():
+            raiz = self._webview_raiz
+            web = self._webview
+            self._webview = None
+            self._webview_raiz = None
+            self._webview_listeners = []
+            if raiz is not None:
+                pai = raiz.getParent()
+                if pai is not None:
+                    pai.removeView(raiz)
+            if web is not None:
+                try:
+                    web.stopLoading()
+                    web.destroy()
+                except Exception:
+                    pass
+
+        fechar()
+
+    def _ao_tecla_painel(self, _janela, tecla, *_args):
+        if tecla == 27 and self._webview is not None:
+            self._fechar_painel_android()
+            return True
+        return False
 
     def atualizar_tudo(self):
         self.carregar_salas(silencioso=True)

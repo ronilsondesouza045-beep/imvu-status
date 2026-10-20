@@ -2,12 +2,16 @@
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+const APP_MODE = new URLSearchParams(location.search).get('app') === '1';
+const LINK_ALVO = APP_MODE ? '' : ' target="_blank" rel="noopener"';
 
 const state = {
   device: '',
   nick: null,
   avatar: null,
   history: null,
+  completo: null,
+  catalog: { q: '', tipo: 'produtos', ordenar: 'relevancia', pagina: 1 },
   watch: [],
   alerts: [],
   hooks: [],
@@ -18,8 +22,9 @@ const state = {
 
 const TITULOS = {
   painel: ['Painel', 'Visao geral do movimento em tempo real.'],
-  avatar: ['Avatar', 'Historico, previsao e looks de um nick.'],
-  salas: ['Salas', 'Ranking, ocupacao e diretorio publico.'],
+  avatar: ['Avatar', 'Perfil publico, outfit, historico e previsao de um nick.'],
+  salas: ['Salas', 'Ranking, ocupacao ao vivo e diretorio publico.'],
+  catalogo: ['Catalogo', 'Busque produtos e criadores da loja do IMVU.'],
   alertas: ['Alertas', 'Acompanhe avatares e receba avisos.'],
   api: ['API', 'Endpoints publicos para integrar.'],
 };
@@ -119,6 +124,7 @@ function irPara(pagina) {
   $('#page-sub').textContent = titulo[1];
   if (pagina === 'painel') carregarPainel();
   if (pagina === 'salas') carregarSalas();
+  if (pagina === 'catalogo' && $('#catalog-q')) $('#catalog-q').focus();
   if (pagina === 'alertas') { carregarWatch(); carregarAlertas(); carregarHooks(); }
 }
 
@@ -229,7 +235,7 @@ function desenharHeatmap(alvo, dados) {
     linha.forEach((valor, hora) => {
       const intensidade = Math.min(0.92, 0.06 + (Number(valor) / maximo) * 0.86);
       html += '<div class="heat-cell" title="' + esc(dados.dias[dia] + ' ' + hora + 'h: ' + valor) +
-        ' pessoas" style="background:rgba(45,212,191,' + intensidade.toFixed(2) + ')"></div>';
+        ' pessoas" style="background:rgba(220,38,38,' + intensidade.toFixed(2) + ')"></div>';
     });
   });
   html += '</div><div class="heat-legend"><span>menos</span><span class="heat-scale"></span><span>mais</span></div>';
@@ -260,9 +266,10 @@ async function buscarAvatar(nick) {
     renderPerfil(perfil);
     renderPrevisao(perfil.previsao);
     atualizarBotaoWatch();
-    const [historico, looks] = await Promise.allSettled([
+    const [historico, looks, completo] = await Promise.allSettled([
       api('/api/avatar/' + encodeURIComponent(perfil.nick) + '/history?horas=168'),
       api('/api/avatar/' + encodeURIComponent(perfil.nick) + '/looks'),
+      api('/api/avatar/' + encodeURIComponent(perfil.nick) + '/profile?produtos=30'),
     ]);
     if (historico.status === 'fulfilled') {
       state.history = historico.value;
@@ -275,6 +282,32 @@ async function buscarAvatar(nick) {
     } else {
       $('#avatar-looks').innerHTML = '<p class="empty">Sem looks registrados.</p>';
     }
+    if (completo.status === 'fulfilled') {
+      state.completo = completo.value;
+      renderOutfit(completo.value);
+      renderDetalhes(completo.value);
+      renderPerfilCompleto(completo.value);
+      const itensOutfit = ((completo.value.outfit || {}).itens || []).length;
+      if (!itensOutfit) {
+        setTimeout(() => {
+          api('/api/avatar/' + encodeURIComponent(perfil.nick) + '/profile?produtos=30')
+            .then((novo) => {
+              const novosItens = ((novo.outfit || {}).itens || []).length;
+              if (!novosItens) return;
+              state.completo = novo;
+              renderOutfit(novo);
+              renderDetalhes(novo);
+              renderPerfilCompleto(novo);
+            })
+            .catch(() => null);
+        }, 5000);
+      }
+    } else {
+      state.completo = null;
+      $('#avatar-outfit').innerHTML = '<p class="empty">Outfit indisponivel agora.</p>';
+      $('#avatar-details').innerHTML = '<p class="empty">Detalhes publicos indisponiveis agora.</p>';
+      $('#outfit-info').textContent = '';
+    }
   } catch (erro) {
     toast(erro.message, true);
     $('#avatar-card').innerHTML = '<div class="empty big">' + esc(erro.message) + '</div>';
@@ -282,6 +315,9 @@ async function buscarAvatar(nick) {
     $('#avatar-timeline').innerHTML = '';
     $('#avatar-rooms').innerHTML = '';
     $('#avatar-looks').innerHTML = '';
+    $('#avatar-outfit').innerHTML = '<p class="empty">Consulte um nick para ver o outfit.</p>';
+    $('#avatar-details').innerHTML = '<p class="empty">Consulte um nick para ver os detalhes.</p>';
+    $('#outfit-info').textContent = '';
   } finally {
     botao.disabled = false;
     botao.textContent = 'Consultar';
@@ -303,7 +339,7 @@ function renderPerfil(perfil) {
     : 'nao exposta agora';
   const foto = imagem
     ? '<img class="avatar-img" src="' + esc(imagem) + '" alt="avatar" onerror="this.style.display=\'none\'">'
-    : '<div class="avatar-img" style="display:grid;place-items:center;color:#647b95;font-weight:700">' +
+    : '<div class="avatar-img" style="display:grid;place-items:center;color:rgba(255,255,255,.42);font-weight:700">' +
       esc((perfil.nick || '?').slice(0, 2).toUpperCase()) + '</div>';
 
   $('#avatar-card').innerHTML =
@@ -325,6 +361,91 @@ function renderPerfil(perfil) {
     ]) + '</div>';
 
   $('#avatar-updated').textContent = 'atualizado ' + fmtData(perfil.atualizado_em);
+}
+
+function fmtCreditos(valor) {
+  const numero = Number(valor);
+  if (!valor || Number.isNaN(numero)) return '--';
+  return numero.toLocaleString('pt-BR') + ' cr';
+}
+
+function produtoCard(item) {
+  const imagem = item.imagem
+    ? '<img src="' + esc(item.imagem) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">'
+    : '<span class="product-placeholder">sem imagem</span>';
+  const desconto = item.preco_desconto && item.preco && item.preco_desconto < item.preco;
+  const preco = desconto
+    ? '<s>' + esc(fmtCreditos(item.preco)) + '</s> ' + esc(fmtCreditos(item.preco_desconto))
+    : esc(fmtCreditos(item.preco));
+  return (
+    '<a class="product-card" href="' + esc(item.pagina || '#') + '"' + LINK_ALVO + '>' +
+    '<div class="product-img">' + imagem + '</div>' +
+    '<div class="product-body">' +
+    '<div class="product-name" title="' + esc(item.nome) + '">' + esc(item.nome) + '</div>' +
+    '<div class="product-meta">' + esc(item.criador || '?') + (item.rating ? ' - ' + esc(item.rating) + (/^\d/.test(String(item.rating)) ? ' estrelas' : '') : '') + '</div>' +
+    '<div class="product-price">' + preco + '</div>' +
+    '</div></a>'
+  );
+}
+
+function renderOutfit(dados) {
+  const alvo = $('#avatar-outfit');
+  const info = $('#outfit-info');
+  if (!alvo) return;
+  const pacote = (dados && dados.outfit) || dados || {};
+  const itens = pacote.itens || [];
+  if (!itens.length) {
+    alvo.innerHTML = '<p class="empty">Sem itens publicos no outfit agora.</p>';
+    if (info) info.textContent = '';
+    return;
+  }
+  if (info) info.textContent = itens.length + ' itens visiveis';
+  alvo.innerHTML = itens.map(produtoCard).join('');
+}
+
+function renderDetalhes(dados) {
+  const alvo = $('#avatar-details');
+  if (!alvo) return;
+  const perfil = dados.perfil || {};
+  const det = dados.detalhes || {};
+  const sala = dados.sala || {};
+  const linhas = [
+    '<div>Idade: <b>' + esc(det.idade ?? '?') + '</b> - Genero: <b>' + esc(det.genero || '?') + '</b></div>',
+    '<div>Pais: <b>' + esc(det.pais || '?') + '</b>' + (det.estado ? ' - Estado: <b>' + esc(det.estado) + '</b>' : '') + '</div>',
+    '<div>Membro desde: <b>' + esc(det.membro_desde || '?') + '</b> - Selo: <b>' + esc(det.badge_level || 0) + '</b></div>',
+    '<div>Seguidores: <b>' + esc(perfil.seguidores ?? '?') + '</b> - Seguindo: <b>' + esc(perfil.seguindo ?? '?') + '</b></div>',
+    '<div>Verificado: <b>' + (det.idade_verificada ? 'sim' : 'nao') + '</b> - NFT: <b>' + (det.nft ? 'sim' : 'nao') + '</b></div>',
+  ];
+  if (sala && sala.rid) {
+    linhas.push(
+      '<div>Sala atual: <b>' + esc(sala.nome || '?') + '</b>' +
+      (sala.online !== null && sala.online !== undefined
+        ? ' - <b>' + esc(sala.online) + '</b> de <b>' + esc(sala.capacidade || '?') + '</b> online'
+        : '') + '</div>'
+    );
+    if (sala.dono) linhas.push('<div>Dono da sala: <b>' + esc(sala.dono) + '</b></div>');
+  } else {
+    linhas.push('<div>Sala atual: <b>nao exposta agora</b></div>');
+  }
+  let html = '<div class="profile-facts">' + linhas.join('') + '</div>';
+  if (sala && sala.imagem) {
+    html += '<a class="room-photo" href="' + esc(sala.join_url || '#') + '"' + LINK_ALVO + '>' +
+      '<img src="' + esc(sala.imagem) + '" alt="sala atual" loading="lazy" onerror="this.style.display=\'none\'">' +
+      (sala.join_url ? '<span>abrir sala no IMVU</span>' : '') + '</a>';
+  }
+  if (det.interesses) html += '<div class="tagline">' + esc(det.interesses) + '</div>';
+  if (sala && sala.descricao) html += '<p class="room-desc">' + esc(sala.descricao) + '</p>';
+  alvo.innerHTML = html;
+}
+
+function renderPerfilCompleto(dados) {
+  if (!state.avatar || !dados) return;
+  const perfil = dados.perfil || {};
+  if (perfil.seguidores !== undefined && perfil.seguidores !== null) {
+    state.avatar.seguidores = perfil.seguidores;
+  }
+  if (dados.sala) state.avatar.sala = dados.sala;
+  renderPerfil(state.avatar);
 }
 
 function renderPrevisao(previsao) {
@@ -361,8 +482,8 @@ function renderHistorico(dados) {
   desenharGrafico('chart-dias', 'bar', dias.map((d) => d.dia.slice(5)), [{
     label: 'minutos',
     data: dias.map((d) => d.minutos),
-    backgroundColor: 'rgba(45,212,191,.55)',
-    borderColor: '#2dd4bf',
+    backgroundColor: 'rgba(220,38,38,.55)',
+    borderColor: '#dc2626',
     borderWidth: 1,
     borderRadius: 4,
   }]);
@@ -371,8 +492,8 @@ function renderHistorico(dados) {
   desenharGrafico('chart-horas', 'line', horas.map((_, i) => i + 'h'), [{
     label: 'entradas',
     data: horas,
-    borderColor: '#38bdf8',
-    backgroundColor: 'rgba(56,189,248,.12)',
+    borderColor: '#deb359',
+    backgroundColor: 'rgba(222,179,89,.12)',
     fill: true,
     tension: .35,
     pointRadius: 0,
@@ -438,8 +559,8 @@ function desenharGrafico(id, tipo, labels, datasets) {
       maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { grid: { color: 'rgba(29,44,64,.5)' }, ticks: { color: '#647b95', maxRotation: 0 } },
-        y: { beginAtZero: true, grid: { color: 'rgba(29,44,64,.5)' }, ticks: { color: '#647b95' } },
+        x: { grid: { color: 'rgba(255,255,255,.06)' }, ticks: { color: 'rgba(255,255,255,.45)', maxRotation: 0 } },
+        y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,.06)' }, ticks: { color: 'rgba(255,255,255,.45)' } },
       },
     },
   });
@@ -617,6 +738,15 @@ function configurarSalas() {
   const letras = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('');
   select.innerHTML = letras.map((letra) => '<option value="' + letra + '">' + letra + '</option>').join('');
   $('#letra-btn').addEventListener('click', () => carregarDiretorio(select.value));
+  const vivo = $('#vivo-letra');
+  vivo.innerHTML = letras.map((letra) => '<option value="' + letra + '">' + letra + '</option>').join('');
+  $('#vivo-btn').addEventListener('click', () => carregarSalasAoVivo(vivo.value));
+  $('#rooms-live').addEventListener('click', (evento) => {
+    const card = evento.target.closest('[data-rid]');
+    if (!card) return;
+    $('#rid-input').value = card.dataset.rid;
+    abrirSala(card.dataset.rid);
+  });
   $('#rooms-table').addEventListener('click', (evento) => {
     const linha = evento.target.closest('[data-rid]');
     if (linha) abrirSala(linha.dataset.rid);
@@ -634,45 +764,98 @@ async function carregarSalas() {
   } catch (erro) {
     $('#rooms-table').innerHTML = '<p class="empty">' + esc(erro.message) + '</p>';
   }
+  carregarSalasAoVivo($('#vivo-letra').value || 'A');
   try {
     const calor = await api('/api/rooms/heatmap?horas=168');
     desenharHeatmap($('#heatmap-salas'), calor);
   } catch (_) { /* opcional */ }
 }
 
+function liveCard(sala) {
+  const imagem = sala.imagem
+    ? '<img src="' + esc(sala.imagem) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">'
+    : '<span class="live-placeholder">sem imagem</span>';
+  return (
+    '<button type="button" class="live-card" data-rid="' + esc(sala.rid) + '" title="' + esc(sala.nome) + '">' +
+    '<div class="live-img">' + imagem + '</div>' +
+    '<div class="live-body">' +
+    '<div class="room-name">' + esc(sala.nome || 'Sala sem nome') + '</div>' +
+    '<div class="room-meta">' + esc(sala.dono || '?') + ' - ' + esc(sala.privacidade || 'publica') +
+    (sala.idioma ? ' - ' + esc(sala.idioma) : '') + '</div>' +
+    '<div class="live-count">' + esc(sala.online ?? '?') +
+    '<span>/' + esc(sala.capacidade || '?') + ' online</span></div>' +
+    '</div></button>'
+  );
+}
+
+async function carregarSalasAoVivo(letra) {
+  const alvo = $('#rooms-live');
+  if (!alvo) return;
+  alvo.innerHTML = '<div class="skeleton"></div>';
+  try {
+    const dados = await api('/api/rooms/live?letra=' + encodeURIComponent(letra || 'A') + '&limite=12');
+    const salas = dados.salas || [];
+    alvo.innerHTML = salas.length
+      ? salas.map(liveCard).join('')
+      : '<p class="empty">Nenhuma sala publica encontrada para ' + esc(letra) + '.</p>';
+  } catch (erro) {
+    alvo.innerHTML = '<p class="empty">' + esc(erro.message) + '</p>';
+  }
+}
+
 async function abrirSala(rid) {
   const valor = String(rid || '').trim();
   if (!valor) { toast('Informe o ID da sala.', true); return; }
   $('#room-detail').innerHTML = '<div class="skeleton"></div>';
-  try {
-    const dados = await api('/api/rooms/' + encodeURIComponent(valor) + '/history?horas=24');
-    const sala = dados.sala || {};
-    const resumo = dados.resumo || {};
-    $('#rid-input').value = sala.rid || valor;
-    $('#room-detail').innerHTML =
-      '<div class="profile-facts">' +
-      '<div><b>' + esc(sala.nome || 'Sala') + '</b> - ' + esc(sala.rid || valor) + '</div>' +
-      '<div>Dono: <b>' + esc(sala.dono || '?') + '</b> - Capacidade: <b>' + esc(sala.capacidade || '?') + '</b></div>' +
-      '<div>Agora: <b>' + esc(resumo.online_agora ?? '?') + '</b> - Media: <b>' + esc(resumo.media ?? '?') +
-      '</b> - Pico: <b>' + esc(resumo.pico ?? '?') + '</b></div>' +
-      (resumo.melhor_horario ? '<div>Melhor horario: <b>' + esc(resumo.melhor_horario.hora) + 'h</b></div>' : '') +
-      '</div>';
-    const pontos = dados.pontos || [];
+  const [publico, historico] = await Promise.allSettled([
+    api('/api/rooms/' + encodeURIComponent(valor)),
+    api('/api/rooms/' + encodeURIComponent(valor) + '/history?horas=24'),
+  ]);
+  if (publico.status === 'rejected' && historico.status === 'rejected') {
+    const erro = publico.reason || historico.reason || new Error('sala indisponivel');
+    toast(erro.message, true);
+    $('#room-detail').innerHTML = '<p class="empty">' + esc(erro.message) + '</p>';
+    return;
+  }
+  const sala = publico.status === 'fulfilled' ? publico.value : (historico.value.sala || {});
+  const dados = historico.status === 'fulfilled' ? historico.value : {};
+  const resumo = dados.resumo || {};
+  $('#rid-input').value = sala.rid || valor;
+  let html = '';
+  if (sala.imagem) {
+    html += '<a class="room-photo" href="' + esc(sala.join_url || '#') + '"' + LINK_ALVO + '>' +
+      '<img src="' + esc(sala.imagem) + '" alt="sala" loading="lazy" onerror="this.style.display=\'none\'">' +
+      (sala.join_url ? '<span>abrir sala no IMVU</span>' : '') + '</a>';
+  }
+  html += '<div class="profile-facts">' +
+    '<div><b>' + esc(sala.nome || 'Sala') + '</b> - ' + esc(sala.rid || valor) + '</div>' +
+    '<div>Dono: <b>' + esc(sala.dono || '?') + '</b> - Privacidade: <b>' + esc(sala.privacidade || '?') + '</b></div>' +
+    '<div>Agora: <b>' + esc(sala.online ?? resumo.online_agora ?? '?') + '</b> de <b>' +
+    esc(sala.capacidade || '?') + '</b> online</div>' +
+    (sala.rating !== undefined && sala.rating !== null
+      ? '<div>Avaliacao: <b>' + esc(sala.rating) + '</b>' +
+        (sala.idioma ? ' - Idioma: <b>' + esc(sala.idioma) + '</b>' : '') + '</div>'
+      : '') +
+    (resumo.media !== undefined
+      ? '<div>Media: <b>' + esc(resumo.media) + '</b> - Pico: <b>' + esc(resumo.pico ?? '?') + '</b></div>'
+      : '') +
+    (resumo.melhor_horario ? '<div>Melhor horario: <b>' + esc(resumo.melhor_horario.hora) + 'h</b></div>' : '') +
+    '</div>';
+  if (sala.descricao) html += '<p class="room-desc">' + esc(sala.descricao) + '</p>';
+  $('#room-detail').innerHTML = html;
+  const pontos = dados.pontos || [];
+  if (pontos.length) {
     desenharGrafico('chart-sala', 'line', pontos.map((p) => fmtData(p.ts).slice(-5)), [{
       label: 'online',
       data: pontos.map((p) => p.online),
-      borderColor: '#2dd4bf',
-      backgroundColor: 'rgba(45,212,191,.12)',
+      borderColor: '#dc2626',
+      backgroundColor: 'rgba(220,38,38,.12)',
       fill: true,
       tension: .3,
       pointRadius: 0,
     }]);
-    if (!pontos.length) {
-      $('#room-detail').innerHTML += '<p class="empty">Sala sem amostras ainda.</p>';
-    }
-  } catch (erro) {
-    toast(erro.message, true);
-    $('#room-detail').innerHTML = '<p class="empty">' + esc(erro.message) + '</p>';
+  } else {
+    $('#room-detail').innerHTML += '<p class="empty">Sem historico local ainda; mostrando dados ao vivo do IMVU.</p>';
   }
 }
 
@@ -689,6 +872,66 @@ async function carregarDiretorio(letra) {
   } catch (erro) {
     alvo.innerHTML = '<p class="empty">' + esc(erro.message) + '</p>';
   }
+}
+
+function configurarCatalogo() {
+  const form = $('#catalog-form');
+  if (!form) return;
+  form.addEventListener('submit', (evento) => {
+    evento.preventDefault();
+    buscarCatalogo(1);
+  });
+  $('#catalog-pager').addEventListener('click', (evento) => {
+    const botao = evento.target.closest('[data-pagina]');
+    if (botao) buscarCatalogo(Number(botao.dataset.pagina));
+  });
+}
+
+async function buscarCatalogo(pagina) {
+  const termo = $('#catalog-q').value.trim();
+  if (!termo) { toast('Digite um termo para buscar.', true); return; }
+  const tipo = $('#catalog-type').value;
+  const ordenar = $('#catalog-sort').value;
+  const alvo = $('#catalog-grid');
+  alvo.innerHTML = '<div class="skeleton"></div>';
+  $('#catalog-info').textContent = 'buscando...';
+  try {
+    const dados = await api(
+      '/api/catalog/search?q=' + encodeURIComponent(termo) +
+      '&pagina=' + Math.max(1, Number(pagina) || 1) +
+      '&ordenar=' + encodeURIComponent(ordenar) +
+      '&tipo=' + encodeURIComponent(tipo)
+    );
+    state.catalog = { q: termo, tipo, ordenar, pagina: dados.pagina };
+    renderCatalogo(dados);
+  } catch (erro) {
+    toast(erro.message, true);
+    alvo.innerHTML = '<p class="empty">' + esc(erro.message) + '</p>';
+    $('#catalog-info').textContent = '';
+    $('#catalog-pager').innerHTML = '';
+  }
+}
+
+function renderCatalogo(dados) {
+  const itens = dados.itens || [];
+  $('#catalog-info').textContent =
+    (itens.length ? itens.length + ' itens' : 'nenhum item') +
+    ' - pagina ' + dados.pagina + ' de ' + Math.max(1, dados.paginas || 1);
+  $('#catalog-grid').innerHTML = itens.length
+    ? itens.map(produtoCard).join('')
+    : '<p class="empty">Nada encontrado para "' + esc(dados.termo || '') + '".</p>';
+  const pager = $('#catalog-pager');
+  if (!itens.length || (dados.paginas || 1) <= 1) {
+    pager.innerHTML = '';
+    return;
+  }
+  const anterior = dados.pagina > 1
+    ? '<button type="button" class="chip" data-pagina="' + (dados.pagina - 1) + '">Anterior</button>'
+    : '';
+  const proxima = dados.pagina < dados.paginas
+    ? '<button type="button" class="chip" data-pagina="' + (dados.pagina + 1) + '">Proxima</button>'
+    : '';
+  pager.innerHTML = anterior + '<span class="hint">pagina ' + dados.pagina + ' de ' + dados.paginas + '</span>' + proxima;
 }
 
 function anexarFeed(evento) {
@@ -786,11 +1029,16 @@ function notificar(titulo, corpo) {
 function configurarApi() {
   const rotas = [
     ['GET', '/api/status/{nick}', 'status atual, sala e previsao'],
+    ['GET', '/api/avatar/{nick}/profile', 'perfil completo com outfit e sala'],
+    ['GET', '/api/avatar/{nick}/outfit', 'itens publicos do look atual'],
     ['GET', '/api/avatar/{nick}/history', 'linha do tempo, graficos e recordes'],
     ['GET', '/api/avatar/{nick}/looks', 'galeria de looks'],
     ['GET', '/api/avatar/{nick}/prediction', 'previsao de horarios'],
+    ['GET', '/api/catalog/search', 'catalogo de produtos e criadores'],
     ['GET', '/api/rooms/top', 'ranking de salas por ocupacao'],
+    ['GET', '/api/rooms/live', 'salas publicas com ocupacao ao vivo'],
     ['GET', '/api/rooms/heatmap', 'movimento por dia e hora'],
+    ['GET', '/api/rooms/{rid}', 'detalhes publicos de uma sala'],
     ['GET', '/api/rooms/{rid}/history', 'ocupacao de uma sala'],
     ['GET', '/api/rooms/directory?letra=A', 'diretorio publico de salas'],
     ['GET', '/api/digest', 'resumo automatico do dia'],
@@ -810,7 +1058,10 @@ function configurarApi() {
   const base = location.origin;
   $('#api-examples').textContent =
     'curl ' + base + '/api/status/SEU_NICK\n\n' +
+    'curl "' + base + '/api/avatar/SEU_NICK/profile?produtos=30"\n\n' +
     'curl "' + base + '/api/avatar/SEU_NICK/history?horas=168"\n\n' +
+    'curl "' + base + '/api/catalog/search?q=dress&pagina=1"\n\n' +
+    'curl "' + base + '/api/rooms/live?letra=A&limite=12"\n\n' +
     'curl "' + base + '/api/rooms/top?horas=24"\n\n' +
     'curl "' + base + '/api/events?device=' + state.device + '"\n\n' +
     'Documentacao interativa: ' + base + '/docs';
@@ -822,6 +1073,7 @@ function iniciar() {
   configurarNavegacao();
   configurarAvatar();
   configurarSalas();
+  configurarCatalogo();
   configurarHooks();
   configurarApi();
   relogio();

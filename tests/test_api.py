@@ -1,4 +1,4 @@
-import datetime
+﻿import datetime
 import socket
 
 from server.alerts import url_segura
@@ -99,22 +99,22 @@ def test_paginas_do_dashboard(client):
 
 
 def test_historico_completo(client, db):
-    criar_avatar(db, "avatarteste", "cid-1")
-    historico = client.get("/api/avatar/avatarteste/history?horas=168")
+    criar_avatar(db, "PerfilXYZ", "cid-1")
+    historico = client.get("/api/avatar/PerfilXYZ/history?horas=168")
     assert historico.status_code == 200
     dados = historico.json()
-    assert dados["nick"] == "avatarteste"
+    assert dados["nick"] == "PerfilXYZ"
     assert dados["estatisticas"]["eventos"] >= 3
     assert len(dados["grafico"]["dias"]) == 14
     assert len(dados["grafico"]["horas"]) == 24
     assert dados["previsao"]["amostras"] >= 1
     assert len(dados["eventos"]) >= 3
 
-    previsao = client.get("/api/avatar/avatarteste/prediction")
+    previsao = client.get("/api/avatar/PerfilXYZ/prediction")
     assert previsao.status_code == 200
     assert "proxima" in previsao.json()
 
-    looks = client.get("/api/avatar/avatarteste/looks")
+    looks = client.get("/api/avatar/PerfilXYZ/looks")
     assert looks.status_code == 200
     assert len(looks.json()["looks"]) == 1
 
@@ -263,3 +263,93 @@ def test_nick_invalido(client):
     assert resposta.status_code == 400
     resposta = client.get("/api/status/%3Cscript%3E")
     assert resposta.status_code == 400
+
+
+def test_perfil_e_outfit(client, monkeypatch):
+    async def falso_perfil(nick, limite_outfit=40):
+        return {
+            "nick": nick,
+            "display_name": nick.title(),
+            "cid": "123",
+            "online": True,
+            "sala": {"rid": "12345678-1", "nome": "Sala Teste", "privacidade": "public"},
+            "perfil": {"titulo": "Titulo", "imagem": None, "seguidores": 7, "seguindo": 3},
+            "detalhes": {"idade": 21, "genero": "Feminino", "pais": "BR"},
+            "outfit": {"total": 1, "itens": [{"id": 1, "nome": "Camisa", "preco": 100}]},
+            "atualizado_em": "2026-01-01T00:00:00+00:00",
+        }
+
+    async def falso_check(nick, detalhes=False):
+        return {"nick": nick}
+
+    async def falso_resolver(nick):
+        return {"rel": {"profile_outfit": "https://api.imvu.com/profile_outfit/profile_outfit-1"}}
+
+    async def falso_outfit(rel, limite=40):
+        return {"total": 1, "itens": [{"id": 1, "nome": "Camisa"}]}
+
+    monkeypatch.setattr("server.app.cliente.perfil_completo", falso_perfil)
+    monkeypatch.setattr("server.app.cliente.check", falso_check)
+    monkeypatch.setattr("server.app.cliente.resolver_nick", falso_resolver)
+    monkeypatch.setattr("server.app.cliente.outfit", falso_outfit)
+
+    perfil = client.get("/api/avatar/SemHistoricoXYZ/profile?produtos=10")
+    assert perfil.status_code == 200
+    dados = perfil.json()
+    assert dados["nick"] == "SemHistoricoXYZ"
+    assert dados["perfil"]["seguidores"] == 7
+    assert dados["outfit"]["itens"][0]["nome"] == "Camisa"
+    assert dados["historico_disponivel"] is False
+
+    roupa = client.get("/api/avatar/SemHistoricoXYZ/outfit?limite=5")
+    assert roupa.status_code == 200
+    assert roupa.json()["nick"] == "SemHistoricoXYZ"
+    assert roupa.json()["total"] == 1
+
+
+def test_catalogo_endpoint(client, monkeypatch):
+    async def falso_catalogo(termo, pagina=1, ordenar="relevancia", tipo="produtos"):
+        return {
+            "termo": termo,
+            "pagina": pagina,
+            "paginas": 2,
+            "ordenar": ordenar,
+            "tipo": tipo,
+            "itens": [{"id": 10, "nome": "Vestido", "preco": 500}],
+        }
+
+    monkeypatch.setattr("server.app.cliente.catalogo", falso_catalogo)
+
+    resposta = client.get("/api/catalog/search", params={"q": "dress", "pagina": 2})
+    assert resposta.status_code == 200
+    assert resposta.json()["itens"][0]["nome"] == "Vestido"
+    assert resposta.json()["pagina"] == 2
+
+    assert client.get("/api/catalog/search", params={"q": ""}).status_code == 422
+    assert client.get("/api/catalog/search", params={"q": "x", "ordenar": "invalido"}).status_code == 400
+    assert client.get("/api/catalog/search", params={"q": "x", "tipo": "invalido"}).status_code == 400
+
+
+def test_salas_publicas_endpoints(client, monkeypatch):
+    assert client.get("/api/rooms/xxx").status_code == 400
+
+    async def falso_live(letra="A", limite=12):
+        return {"letra": letra, "total": 50, "salas": [{"rid": "12345678-1", "nome": "Sala X", "online": 5}]}
+
+    async def falso_sala(rid):
+        return {"rid": rid, "nome": "Sala X", "online": 5, "capacidade": 20}
+
+    monkeypatch.setattr("server.app.cliente.salas_ao_vivo", falso_live)
+    monkeypatch.setattr("server.app.cliente.sala_publica", falso_sala)
+
+    vivo = client.get("/api/rooms/live?letra=A&limite=5")
+    assert vivo.status_code == 200
+    assert vivo.json()["salas"][0]["online"] == 5
+
+    detalhe = client.get("/api/rooms/12345678-1")
+    assert detalhe.status_code == 200
+    assert detalhe.json()["capacidade"] == 20
+
+    assert client.get("/api/rooms/top?horas=24&limite=5").status_code == 200
+
+

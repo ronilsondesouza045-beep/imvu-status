@@ -219,7 +219,11 @@ def config():
             "looks",
             "previsao",
             "salas",
+            "salas_ao_vivo",
             "heatmap",
+            "perfil",
+            "outfit",
+            "catalogo",
             "alertas",
             "webhooks",
             "resumo",
@@ -311,6 +315,70 @@ def previsao_avatar(nick: str):
         return {"nick": avatar.nick, **analytics.prever_avatar(db, avatar)}
 
 
+@app.get("/api/avatar/{nick}/profile")
+async def perfil_avatar(nick: str, produtos: int = Query(40, ge=0, le=60)):
+    nick = _validar_nick(nick)
+    try:
+        dados = await cliente.perfil_completo(nick, limite_outfit=produtos)
+    except IMVUErro as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    if not dados:
+        raise HTTPException(404, "nick nao encontrado no IMVU")
+    resposta = dict(dados)
+    with SessionLocal() as db:
+        avatar = buscar_avatar(db, dados.get("nick") or nick)
+        if avatar:
+            resposta.update(analytics.resumo_avatar_rapido(db, avatar))
+            resposta["historico_disponivel"] = True
+        else:
+            resposta["historico_disponivel"] = False
+    return resposta
+
+
+@app.get("/api/avatar/{nick}/outfit")
+async def outfit_avatar(nick: str, limite: int = Query(40, ge=1, le=60)):
+    nick = _validar_nick(nick)
+    try:
+        dados = await cliente.check(nick, detalhes=True)
+        if not dados:
+            raise HTTPException(404, "nick nao encontrado no IMVU")
+        usuario = await cliente.resolver_nick(dados["nick"])
+        if not usuario:
+            raise HTTPException(404, "nick nao encontrado no IMVU")
+        roupa = await cliente.outfit(usuario["rel"], limite=limite)
+    except IMVUErro as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    return {"nick": dados["nick"], **roupa}
+
+
+@app.get("/api/catalog/search")
+async def catalogo(
+    q: str = Query(..., min_length=1, max_length=120),
+    pagina: int = Query(1, ge=1, le=200),
+    ordenar: str = Query("relevancia"),
+    tipo: str = Query("produtos"),
+):
+    if ordenar not in {"relevancia", "novidades", "preco_asc", "preco_desc", "avaliacao"}:
+        raise HTTPException(400, "ordenacao invalida")
+    if tipo not in {"produtos", "criador", "id"}:
+        raise HTTPException(400, "tipo de busca invalido")
+    try:
+        return await cliente.catalogo(q, pagina=pagina, ordenar=ordenar, tipo=tipo)
+    except IMVUErro as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+
+
+@app.get("/api/rooms/live")
+async def salas_ao_vivo(
+    letra: str = Query("A", min_length=1, max_length=1),
+    limite: int = Query(12, ge=1, le=30),
+):
+    try:
+        return await cliente.salas_ao_vivo(letra=letra, limite=limite)
+    except IMVUErro as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+
+
 @app.get("/api/rooms/top")
 def salas_top(horas: int = Query(24, ge=1, le=720), limite: int = Query(20, ge=1, le=100)):
     with SessionLocal() as db:
@@ -332,6 +400,14 @@ async def diretorio(letra: str = Query("A", min_length=1, max_length=1)):
         raise HTTPException(exc.status, str(exc)) from exc
     novas = await asyncio.to_thread(descobrir_salas, lista)
     return {"letra": letra, "salas": lista, "novas": novas}
+
+
+@app.get("/api/rooms/{rid}")
+async def sala_publica(rid: str):
+    try:
+        return await cliente.sala_publica(rid)
+    except IMVUErro as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
 
 
 @app.get("/api/rooms/{rid}/history")
